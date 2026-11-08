@@ -1,0 +1,66 @@
+# CHIMERA on the build box: the live site, its CI/CD agent and its tunnel.
+# Lives at $CHIMERA_HOME (~/chimera) on quidnug-docker; deploy/install.sh copies
+# this directory there and starts `ci` and `cloudflared`. The agent builds the
+# `web` image and starts or swaps `web` itself, so `web` is never started by hand
+# before the first build.
+name: chimera
+
+services:
+  # The deployed build: nginx serving the Vite bundle, plus the agent's status
+  # page at /_ci/. chimera-ci makes the image (chimera-web:<sha> and :latest).
+  web:
+    image: chimera-web:latest
+    pull_policy: never # never fetch someone else's "chimera-web" from a registry
+    container_name: chimera-web
+    restart: unless-stopped
+    volumes:
+      - ./ci-status:/srv/ci:ro
+    networks: [chimera]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/version.json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Pull-based CI/CD (ci/agent.sh): polls GitHub, builds with the host's Docker,
+  # swaps `web`, runs the tests.
+  ci:
+    build: ./ci
+    image: chimera-ci:local
+    pull_policy: build
+    container_name: chimera-ci
+    restart: unless-stopped
+    init: true
+    user: "${CHIMERA_UID:-1000}:${CHIMERA_GID:-1000}"
+    group_add: ["${DOCKER_GID:-983}"]
+    environment:
+      CHIMERA_HOME: ${CHIMERA_HOME:?set CHIMERA_HOME in .env}
+      HOME: ${CHIMERA_HOME}/.agent-home
+      REPO_URL: ${REPO_URL:-https://github.com/bhmortim/chimera-vocal-synth.git}
+      BRANCH: ${BRANCH:-main}
+      POLL_SECONDS: ${POLL_SECONDS:-20}
+      PUBLIC_URL: ${PUBLIC_URL:-https://chimera.round.rocks}
+      RUN_TESTS: ${RUN_TESTS:-1}
+      BOX_NAME: quidnug-docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The same absolute path inside and out, so the relative bind mounts in this
+      # file resolve the same when the agent runs `docker compose up web` itself.
+      - ${CHIMERA_HOME}:${CHIMERA_HOME}
+    working_dir: ${CHIMERA_HOME}
+    networks: [chimera]
+
+  # Named tunnel "chimera": https://chimera.round.rocks -> web (cloudflared/config.yml).
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.2
+    container_name: chimera-cloudflared
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml", "run"]
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    networks: [chimera]
+
+networks:
+  chimera:
+    name: chimera

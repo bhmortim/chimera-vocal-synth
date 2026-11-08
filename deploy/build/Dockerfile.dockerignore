@@ -1,0 +1,11 @@
+# Applies to the build context (a repo checkout) of the Dockerfile next to it.
+# Keep VCS data and build products out: the image makes its own.
+.git
+.claude
+node_modules
+target
+dist
+out
+src/wasm/chimera.wasm
+public/shows
+**/*.wav

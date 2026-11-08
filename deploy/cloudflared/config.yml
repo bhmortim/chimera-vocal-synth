@@ -1,0 +1,9 @@
+# Tunnel "chimera". Created with `cloudflared tunnel create chimera`; DNS routed with
+# `cloudflared tunnel route dns chimera chimera.round.rocks`. The secret half,
+# credentials.json, lives only on the box at ~/chimera/cloudflared/ (never in git).
+tunnel: de013234-6f31-4700-b40a-33ad07386f49
+credentials-file: /etc/cloudflared/credentials.json
+ingress:
+  - hostname: chimera.round.rocks
+    service: http://chimera-web:80
+  - service: http_status:404
