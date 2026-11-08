@@ -11,6 +11,7 @@ use super::{Intonation, Plan, PlannedSegment, Segment};
 use crate::anatomy::human::{ArticKey, ArticPatch, BodyMix, BodyName};
 use crate::control::score::{ControlKey, Gesture, Targets};
 use crate::math::{js_max, js_min, js_round};
+use crate::voice::detail::Detail;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -34,10 +35,27 @@ pub struct VowelTarget {
 /// body name → IPA → calibrated vowel
 pub type VowelTable = BTreeMap<String, BTreeMap<String, VowelTarget>>;
 
-/// The calibrated vowel table (parsed once).
+/// The calibrated vowel table of the standard model (parsed once).
 pub fn vowel_table() -> &'static VowelTable {
-    static T: OnceLock<VowelTable> = OnceLock::new();
-    T.get_or_init(|| serde_json::from_str(include_str!("vowelTargets.generated.json")).expect("vowelTargets.generated.json"))
+    vowel_table_for(Detail::STANDARD)
+}
+
+/// The calibrated vowel table of a [`Detail`] (parsed once). The standard model's is fitted to
+/// reference formants; each finer detail's is refit (`chimera calibrate vowels --detail <name>`)
+/// to the formants the standard model gives each vowel, starting from its posture, so switching
+/// detail leaves the vowels where they were.
+pub fn vowel_table_for(detail: Detail) -> &'static VowelTable {
+    static T: [OnceLock<VowelTable>; 6] = [const { OnceLock::new() }; 6];
+    const TEXT: [&str; 6] = [
+        include_str!("vowelTargets.generated.json"),
+        include_str!("vowelTargets.standard-anatomy.generated.json"),
+        include_str!("vowelTargets.high.generated.json"),
+        include_str!("vowelTargets.high-anatomy.generated.json"),
+        include_str!("vowelTargets.ultra.generated.json"),
+        include_str!("vowelTargets.ultra-anatomy.generated.json"),
+    ];
+    let i = detail.index();
+    T[i].get_or_init(|| serde_json::from_str(TEXT[i]).unwrap_or_else(|e| panic!("vowelTargets ({}): {e}", detail.name())))
 }
 
 /// Diphthongs and r-coloured vowels expand to vowel sequences. American /eɪ oʊ/ glide toward
@@ -70,23 +88,28 @@ pub fn is_vowel(ipa: &str, body: BodyMix) -> bool {
 }
 
 /// The calibrated articulation of a vowel for a body: between presets, the presets' calibrated
-/// articulations blended by the body's weights.
+/// articulations blended by the body's weights. The standard model's; see [`vowel_artic_at`].
 pub fn vowel_artic(ipa: &str, body: BodyMix) -> Option<ArticPatch> {
+    vowel_artic_at(ipa, body, Detail::STANDARD)
+}
+
+/// [`vowel_artic`] from the table calibrated for a detail.
+pub fn vowel_artic_at(ipa: &str, body: BodyMix, detail: Detail) -> Option<ArticPatch> {
+    let t = vowel_table_for(detail);
     if let Some(b) = body.preset() {
-        return preset_vowel_artic(ipa, b);
+        return preset_vowel_artic(t, ipa, b);
     }
     let w = body.weights();
     let mut parts = [(0.0, ArticPatch::default()); 3];
     for (i, (b, wi)) in w.iter().enumerate() {
         if *wi > 0.0 {
-            parts[i] = (*wi, preset_vowel_artic(ipa, *b)?);
+            parts[i] = (*wi, preset_vowel_artic(t, ipa, *b)?);
         }
     }
     Some(ArticPatch::blend(&parts))
 }
 
-fn preset_vowel_artic(ipa: &str, body: BodyName) -> Option<ArticPatch> {
-    let t = vowel_table();
+fn preset_vowel_artic(t: &VowelTable, ipa: &str, body: BodyName) -> Option<ArticPatch> {
     let v = t.get(body.as_str()).and_then(|b| b.get(ipa)).or_else(|| t.get("male").and_then(|m| m.get(ipa)))?;
     let mut out = ArticPatch::default();
     for k in VOWEL_KEYS {
@@ -107,9 +130,12 @@ fn preset_vowel_artic(ipa: &str, body: BodyName) -> Option<ArticPatch> {
     Some(out)
 }
 
-/// Parse the vowel and consonant tables now (so nothing initialises lazily on the audio thread).
+/// Parse the vowel and consonant tables now (so nothing initialises lazily on the audio thread):
+/// every detail's vowels, since a voice can switch detail.
 pub fn init() {
-    vowel_table();
+    for d in Detail::ALL {
+        vowel_table_for(d);
+    }
     super::inventory::init();
 }
 
@@ -138,6 +164,10 @@ pub struct PlanOptions {
     /// fit short notes. Speech and live notes leave it unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sung: Option<bool>,
+    /// how finely the voice that plays the plan is simulated: its vowels come from that detail's
+    /// calibrated table (the standard model's by default)
+    #[serde(default, skip_serializing_if = "Detail::is_standard")]
+    pub detail: Detail,
 }
 
 /// JS truthiness of an optional number (`if (s.f0)`: 0 and NaN are false).
@@ -203,7 +233,7 @@ pub fn plan_utterance(input: &[Segment], o: &PlanOptions) -> Plan {
         }
     }
     for s in segs.iter_mut() {
-        let v = vowel_artic(s.ipa, body);
+        let v = vowel_artic_at(s.ipa, body, o.detail);
         if v.is_some() {
             s.vowel = v;
         } else {

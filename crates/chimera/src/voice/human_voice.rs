@@ -8,6 +8,7 @@ use crate::anatomy::geom::Vec2;
 use crate::anatomy::human::{ArticKey, ArticPatch, BODY_MALE, HumanBody, N_ARTIC};
 use crate::control::articulators::ArticulatorBank;
 use crate::control::score::{Blended, ControlKey, Gesture, GestureScore, Label, N_CONTROL};
+use crate::voice::detail::Detail;
 use crate::math::{PI, clamp, exp, js_max, js_min, js_sign, js_trunc_i32, pow, sqrt, tanh};
 use crate::physics::CM_H2O;
 use serde::{Deserialize, Serialize};
@@ -199,11 +200,22 @@ pub struct HumanVoice {
 }
 
 impl HumanVoice {
-    /// A voice rendering at `fs_out`, simulating at `fs_out · oversample`.
+    /// A voice rendering at `fs_out`, simulating at `fs_out · oversample` (the standard grid and
+    /// anatomy).
     pub fn new(fs_out: f64, body: HumanBody, oversample: usize) -> Self {
+        Self::build(fs_out, body, oversample, Detail::STANDARD)
+    }
+
+    /// A voice at a [`Detail`]: its oversampling, measuring grid and anatomy. At
+    /// [`Detail::STANDARD`] it is the default voice, sample for sample.
+    pub fn with_detail(fs_out: f64, body: HumanBody, detail: Detail) -> Self {
+        Self::build(fs_out, body, detail.oversample(fs_out), detail)
+    }
+
+    fn build(fs_out: f64, body: HumanBody, oversample: usize, detail: Detail) -> Self {
         let m = oversample;
         let fs = fs_out * m as f64;
-        let airway = HumanAirway::new(fs, body);
+        let airway = HumanAirway::with_detail(fs, body, detail);
         let n_tract = airway.n_ph + airway.n_or;
         let mut v = HumanVoice {
             fs_out,

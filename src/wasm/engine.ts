@@ -7,7 +7,7 @@
 import { call } from "./chimera.ts";
 import { CREATURE_VISUALS } from "../ui/creatureVisuals.ts";
 import type {
-  ArticKey, ArticSpec, BeatPreset, BodyMix, BeatSound, BeatStep, CreatureDef, CreatureTelemetry, DemoSong, Gesture, HumanArtic, HumanBody,
+  ArticKey, ArticSpec, BeatPreset, BodyMix, BeatSound, BeatStep, CreatureDef, CreatureTelemetry, DemoSong, Detail, Gesture, HumanArtic, HumanBody,
   HumanFrame, Phrase, Plan, Segment, SungNote, Syllable, VoiceSource, VowelRef,
 } from "./types.ts";
 
@@ -44,8 +44,13 @@ export const EXHALE_LABEL: string = CATALOG.exhaleLabel;
 export const BASS_NOTE: number = CATALOG.bassNote;
 export const BEAT_SOUNDS: readonly BeatSound[] = CATALOG.beatSounds;
 export const BEAT_PRESETS: readonly BeatPreset[] = CATALOG.beatPresets;
-/** calibrated vowels per body: articulation and the formants it gives */
+/** calibrated vowels per body: articulation and the formants it gives (the standard model's) */
 export const VOWEL_TARGETS = CATALOG.vowelTargets;
+
+/** A detail's calibrated vowels, in the shape of VOWEL_TARGETS (each finer detail has its own). */
+export function vowelTargets(detail: Detail): typeof VOWEL_TARGETS {
+  return call("vowelTargets", { detail });
+}
 export const DEMO_SONGS: readonly DemoSong[] = CATALOG.demoSongs;
 /** reference vowels (IPA chart, vowel map) */
 export const VOWELS: readonly VowelRef[] = CATALOG.vowels;
@@ -135,6 +140,8 @@ export interface PlanOptions {
   /** a sung phrase (planSong sets it): consonants given a pitch hold it, and pitch ramps shrink
    *  to fit short notes */
   sung?: boolean;
+  /** the detail of the voice that will play the plan: its vowels come from that detail's table */
+  detail?: Detail;
 }
 
 export function planUtterance(segments: Segment[], options: PlanOptions): Plan {
@@ -150,20 +157,20 @@ export function planPhrases(phrases: { segments: Segment[]; intonation?: "statem
   return call("planPhrases", { phrases: phrases.map((p) => ({ segments: p.segments, intonation: p.intonation, pause: p.pause })), options });
 }
 
-export function planSong(notes: SungNote[], options: { body: BodyMix; bpm: number; t0: number; vibrato: number }): Plan {
-  return call("planSong", { notes, options });
+export function planSong(notes: SungNote[], options: { body: BodyMix; bpm: number; t0: number; vibrato: number }, detail?: Detail): Plan {
+  return call("planSong", { notes, options, detail });
 }
 
-export function planNoteOn(syl: Syllable, midi: number, options: { body: BodyMix; vibrato: number; tag: number; legatoFrom?: { syl: Syllable; midi: number } }): Gesture[] {
-  return call("planNoteOn", { syl, midi, options });
+export function planNoteOn(syl: Syllable, midi: number, options: { body: BodyMix; vibrato: number; tag: number; legatoFrom?: { syl: Syllable; midi: number } }, detail?: Detail): Gesture[] {
+  return call("planNoteOn", { syl, midi, options, detail });
 }
 
 export function planMelisma(midi: number, options: { vibrato: number; tag: number }): Gesture[] {
   return call("planMelisma", { midi, options });
 }
 
-export function planNoteOff(syl: Syllable, midi: number, body: BodyMix): Gesture[] {
-  return call("planNoteOff", { syl, midi, body });
+export function planNoteOff(syl: Syllable, midi: number, body: BodyMix, detail?: Detail): Gesture[] {
+  return call("planNoteOff", { syl, midi, body, detail });
 }
 
 /** Smooth activation 0..1..0 with cosine ramps (for drawing the score; the engine's own blend uses its Rust twin). */
@@ -184,9 +191,9 @@ export function formatBeat(steps: readonly (BeatStep | null)[]): string {
   return call("formatBeat", { steps });
 }
 
-/** A beatboxer's ready posture for this body. */
-export function beatReady(body: BodyMix): Partial<HumanArtic> {
-  return call("beatReady", { body });
+/** A beatboxer's ready posture for this body (its schwa from the detail's calibrated vowels). */
+export function beatReady(body: BodyMix, detail?: Detail): Partial<HumanArtic> {
+  return call("beatReady", { body, detail });
 }
 
 // ------------------------------------------------------------------ anatomy
@@ -230,8 +237,8 @@ export interface AirwayModel {
   glottisPort: number;
 }
 
-export function airwayModel(body: BodyMix, sampleRate: number): AirwayModel {
-  return call("model", { body, sampleRate });
+export function airwayModel(body: BodyMix, sampleRate: number, detail?: Detail): AirwayModel {
+  return call("model", { body, sampleRate, detail });
 }
 
 /** Free a model (its id is invalid afterwards). */

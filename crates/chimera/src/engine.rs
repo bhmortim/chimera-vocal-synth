@@ -7,7 +7,7 @@
 //! - `render` advances in 128-sample sub-blocks on an absolute sample count. The sequencer ticks at
 //!   each sub-block boundary, so the output does not depend on the host's block size.
 //! - Rendering, gestures, releases, artic/source/gate changes and beat edits allocate nothing once
-//!   warm. A body or creature switch builds a new airway network (it allocates).
+//!   warm. A body, detail or creature switch builds a new airway network (it allocates).
 
 use crate::anatomy::human::{ArticPatch, BodyMix, BodyName};
 use crate::control::beat_player::BeatPlayer;
@@ -15,6 +15,7 @@ use crate::control::score::{Gesture, GestureScore};
 use crate::creatures::types::CreatureDef;
 use crate::creatures::voice::{CreatureTelemetry, CreatureVoice};
 use crate::phonetics::beatbox::{BeatStep, MAX_SOUND_GESTURES};
+use crate::voice::detail::Detail;
 use crate::voice::human_voice::{HumanVoice, SourcePatch, VoiceTelemetry};
 
 /// Samples per sub-block: the browser's render quantum, kept for every host.
@@ -47,6 +48,7 @@ pub struct VoiceInfo {
 pub struct Engine {
     pub sample_rate: f64,
     body: BodyMix,
+    detail: Detail,
     voice: HumanVoice,
     /// the performer's breath (the voice's own gate also follows the score)
     gate_level: f64,
@@ -62,13 +64,18 @@ impl Engine {
     pub fn new(sample_rate: f64) -> Engine {
         crate::init();
         let body = BodyMix::MALE;
-        Engine { sample_rate, body, voice: Self::make_voice(sample_rate, body), gate_level: 0.0, pos: 0, scratch: Vec::with_capacity(MAX_SCHEDULE), beat: BeatPlayer::new(), creature: None }
+        let detail = Detail::STANDARD;
+        Engine { sample_rate, body, detail, voice: Self::make_voice(sample_rate, body, detail), gate_level: 0.0, pos: 0, scratch: Vec::with_capacity(MAX_SCHEDULE), beat: BeatPlayer::new(), creature: None }
     }
 
-    fn make_voice(fs: f64, body: BodyMix) -> HumanVoice {
-        let mut v = HumanVoice::new(fs, body.body(), if fs > 60000.0 { 1 } else { 2 });
+    fn make_voice(fs: f64, body: BodyMix, detail: Detail) -> HumanVoice {
+        let mut v = HumanVoice::with_detail(fs, body.body(), detail);
         v.set_source(&SourcePatch::f0(default_f0(body)));
         v
+    }
+
+    pub fn detail(&self) -> Detail {
+        self.detail
     }
 
     pub fn info(&self) -> VoiceInfo {
@@ -88,10 +95,24 @@ impl Engine {
     pub fn set_body(&mut self, body: impl Into<BodyMix>) -> VoiceInfo {
         let body: BodyMix = body.into();
         let body = BodyMix::new(body.female, body.child);
-        let prev = core::mem::replace(&mut self.voice, Self::make_voice(self.sample_rate, body));
+        self.rebuild(body, self.detail, true)
+    }
+
+    /// Change how finely the human voice is simulated (see [`Detail`]). The performer's settings
+    /// carry over, pitch included. Allocates (a new airway network).
+    pub fn set_detail(&mut self, detail: Detail) -> VoiceInfo {
+        self.rebuild(self.body, detail, false)
+    }
+
+    /// A new human voice for this body and detail, playing on from the old one.
+    fn rebuild(&mut self, body: BodyMix, detail: Detail, new_pitch: bool) -> VoiceInfo {
+        let prev = core::mem::replace(&mut self.voice, Self::make_voice(self.sample_rate, body, detail));
         self.body = body;
+        self.detail = detail;
         let mut src = SourcePatch::from_source(&prev.source);
-        src.f0 = Some(default_f0(body));
+        if new_pitch {
+            src.f0 = Some(default_f0(body));
+        }
         self.voice.set_source(&src);
         let mut target = ArticPatch::default();
         for (k, x) in prev.artic.target.to_array().iter().enumerate() {

@@ -16,8 +16,9 @@
 //! thread. Call [`init`] first so the phoneme tables are parsed off it.
 
 use super::inventory::phoneme;
-use super::planner::{oral_gestures_into, vowel_artic};
+use super::planner::{oral_gestures_into, vowel_artic_at};
 use crate::anatomy::human::{ArticKey, ArticPatch, BodyMix};
+use crate::voice::detail::Detail;
 use crate::control::score::{ControlKey, Gesture, Label, Targets};
 use crate::math::{js_max, js_min};
 use serde::{Deserialize, Serialize};
@@ -29,9 +30,14 @@ pub fn init() {
 
 /// A beatboxer's ready posture: jaw nearly closed, lips just apart, tongue relaxed.
 pub fn beat_ready(body: BodyMix) -> ArticPatch {
+    beat_ready_at(body, Detail::STANDARD)
+}
+
+/// [`beat_ready`] for a voice at a detail: its schwa from that detail's calibrated table.
+pub fn beat_ready_at(body: BodyMix, detail: Detail) -> ArticPatch {
     // with the jaw nearly closed the tongue rests a little higher than in a spoken schwa; the
     // velar hits need it there: from lower, the release peels open and loses its punch
-    let schwa = vowel_artic("ə", body).unwrap_or_default();
+    let schwa = vowel_artic_at("ə", body, detail).unwrap_or_default();
     let mut out = schwa;
     out.set(ArticKey::TbY, schwa.get(ArticKey::TbY).unwrap_or(6.85) + 0.1).set(ArticKey::Jaw, 0.4).set(ArticKey::LipAp, 0.25).set(ArticKey::LipProt, 0.1);
     out

@@ -1,7 +1,9 @@
 //! The audio-thread ABI allocates nothing once an engine exists: from idle into the first labelled
 //! speech gestures, telemetry snapshots, the sequencer and pad hits, releases and parameter
-//! changes; and, after a creature switch (which may allocate), the creature's rendering,
-//! telemetry, params and calls. Driven through the same C ABI the worklet uses.
+//! changes; after a detail switch (which allocates), the finer voice's speech, whose denser
+//! measuring grid must fit the frame's reserve; and, after a creature switch (which may
+//! allocate), the creature's rendering, telemetry, params and calls. Driven through the same C
+//! ABI the worklet uses.
 use chimera::phonetics::ipa::tokenize_ipa;
 use chimera::phonetics::planner::{PlanOptions, plan_utterance};
 use chimera_wasm::*;
@@ -83,6 +85,22 @@ fn the_audio_thread_abi_does_not_allocate() {
         engine_stop_speech(h);
         render(50);
         assert_eq!(allocs() - before, 0, "the human voice's audio path allocated");
+
+        // a detail switch allocates (a new airway); the finer voice speaking must not, from the
+        // first block after the switch
+        for (resolution, anatomy) in [(2, 1), (1, 0)] {
+            engine_set_detail(h, resolution, anatomy);
+            let before = allocs();
+            let rec = std::slice::from_raw_parts_mut(engine_records(h), plan.gestures.len() * GESTURE_RECORD);
+            for (i, g) in plan.gestures.iter().enumerate() {
+                write_gesture(g, &mut rec[i * GESTURE_RECORD..(i + 1) * GESTURE_RECORD]);
+            }
+            engine_schedule(h, plan.gestures.len(), 0.03, 1);
+            engine_set_gate(h, 1.0);
+            render(400);
+            assert_eq!(allocs() - before, 0, "detail {resolution}/{anatomy}: the finer voice's audio path allocated");
+        }
+        engine_set_detail(h, 0, 0);
 
         // a creature switch allocates; what follows must not (every creature)
         for def in chimera::creatures::CREATURES.iter() {

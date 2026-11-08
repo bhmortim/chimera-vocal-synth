@@ -15,7 +15,7 @@
 //! tract's own buffers, so a voice computing a frame per control step allocates nothing once warm.
 
 use super::geom::{Polyline, Vec2, add, arc, bezier2, bezier3, catmull_rom, dist, lerp_v, norm, polar, ray_crossings, ray_polyline, rotate_about, scale, sub, tangent_angle, v};
-use crate::math::{PI, atan2, clamp, cos, hypot, js_max, js_min, lerp, pow, sin, smoothstep, sqrt};
+use crate::math::{PI, atan2, clamp, cos, hypot, js_max, js_min, js_round, lerp, pow, sin, smoothstep, sqrt};
 use serde::{Deserialize, Serialize};
 
 /// Articulator state (template coordinates, cm, unless noted).
@@ -567,6 +567,36 @@ struct Scratch {
 /// keeps a voice from allocating the first time it meets a new posture.
 const POINTS: usize = 256;
 
+/// Lines of the area function's measuring grid: pharyngeal horizontals, oral fan intervals (the
+/// fan has one more ray than intervals) and front verticals at the teeth and lips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridLines {
+    pub pharynx: usize,
+    pub oral: usize,
+    pub front: usize,
+}
+
+impl GridLines {
+    /// The calibrated grid: the vowel targets were fitted with it.
+    pub const STANDARD: GridLines = GridLines { pharynx: 12, oral: 30, front: 6 };
+
+    /// The standard grid with `factor` times as many lines in each family (never fewer).
+    pub fn scaled(factor: f64) -> GridLines {
+        let n = |x: usize| js_max(x as f64, js_round(x as f64 * factor)) as usize;
+        let s = GridLines::STANDARD;
+        GridLines { pharynx: n(s.pharynx), oral: n(s.oral), front: n(s.front) }
+    }
+
+    /// The most grid samples a frame can receive.
+    pub fn samples(self) -> usize {
+        self.pharynx + self.oral + 1 + self.front
+    }
+}
+
+/// Grid samples reserved in every frame: room for [`GridLines::scaled`] up to ×2 (97 samples), so
+/// a frame of a finer voice never grows on the audio thread either.
+pub const GRID_CAPACITY: usize = 128;
+
 impl Scratch {
     fn new() -> Scratch {
         let pts = || Vec::with_capacity(POINTS);
@@ -612,7 +642,7 @@ impl HumanFrame {
             jaw_bone: pts(),
             epiglottis: pts(),
             nasal_cavity: pts(),
-            grid: Vec::with_capacity(64),
+            grid: Vec::with_capacity(GRID_CAPACITY),
             ..Default::default()
         }
     }
@@ -638,6 +668,8 @@ pub struct HumanVocalTract {
     pub contact_tip_n: Vec2,
     pub contact_body_n: Vec2,
     pub area_law: AreaLaw,
+    /// the measuring grid's line counts (the standard's unless a finer voice set them)
+    pub lines: GridLines,
 }
 
 impl HumanVocalTract {
@@ -658,6 +690,7 @@ impl HumanVocalTract {
             contact_tip_n: v(0.0, -1.0),
             contact_body_n: v(0.0, -1.0),
             area_law: AreaLaw { pharynx: (2.0, 1.4), oral: (2.6, 1.4), front: (2.0, 1.4), ahead: (1.6, 1.4) },
+            lines: GridLines::STANDARD,
         };
         let p = |x: f64, y: f64| t.p(x, y);
         // posterior pharyngeal wall, bottom → top (curving forward into nasopharynx roof)
@@ -926,7 +959,7 @@ impl HumanVocalTract {
         grid.clear();
         let y_epi_top = glottis.y + 2.4 * k * self.body.pharynx;
         let y_phar_top = self.polar_c.y;
-        let n_ph = 12usize;
+        let n_ph = self.lines.pharynx;
         let mut split_index: i32 = -1;
         let teeth_idx;
         {
@@ -1023,7 +1056,7 @@ impl HumanVocalTract {
             }
             // oral family: rays from a centre that glides from C1 (mid-oral) to C2 (behind the incisors)
             // while the angle sweeps back → up → forward; consecutive rays never cross inside the airway.
-            let n_rad = 30;
+            let n_rad = self.lines.oral;
             for i in 0..=n_rad {
                 let t = i as f64 / n_rad as f64;
                 let ang = lerp(180.0, 36.0, t) * DEG;
@@ -1041,7 +1074,7 @@ impl HumanVocalTract {
             let incisor_tip = self.palate[self.palate.len() - 1];
             let x_start = incisor_tip.x + 0.03 * k;
             let x_end = js_max(x_start + 0.3 * k, js_min(ul_edge.x, ll_edge.x) - 0.04 * k);
-            let n_fr = 6;
+            let n_fr = self.lines.front;
             teeth_idx = grid.len();
             for i in 0..n_fr {
                 let x = lerp(x_start, x_end, i as f64 / (n_fr as f64 - 1.0));

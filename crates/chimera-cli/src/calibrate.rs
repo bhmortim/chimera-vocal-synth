@@ -13,9 +13,38 @@ use chimera::phonetics::inventory::consonants as inventory;
 use chimera::phonetics::planner::VowelTable;
 use chimera::phonetics::vowel_data::VOWELS;
 use chimera::util::optimize::{NelderMeadOpts, nelder_mead};
+use chimera::voice::detail::Detail;
 use chimera::voice::human_airway::HumanAirway;
 
 const VOWEL_TABLE: &str = "crates/chimera/src/phonetics/vowelTargets.generated.json";
+
+/// A detail's vowel table: the standard model's, or `vowelTargets.<detail>.generated.json`.
+fn vowel_table_path(d: Detail) -> String {
+    if d == Detail::STANDARD {
+        VOWEL_TABLE.to_string()
+    } else {
+        format!("crates/chimera/src/phonetics/vowelTargets.{}.generated.json", d.name())
+    }
+}
+
+/// Split `--detail <name>` from the arguments (the standard model when absent).
+fn detail_option(a: &[String]) -> Result<(Vec<String>, Detail), String> {
+    let mut rest = Vec::new();
+    let mut detail = Detail::STANDARD;
+    let mut it = a.iter();
+    while let Some(x) = it.next() {
+        if x == "--detail" {
+            let name = it.next().ok_or("--detail needs a name")?;
+            detail = Detail::from_name(name).ok_or_else(|| {
+                let names: Vec<&str> = Detail::ALL.iter().map(|d| d.name()).collect();
+                format!("unknown detail {name} (one of {})", names.join(", "))
+            })?;
+        } else {
+            rest.push(x.clone());
+        }
+    }
+    Ok((rest, detail))
+}
 const CONSONANT_TABLE: &str = "crates/chimera/src/phonetics/consonantTargets.generated.json";
 const BODIES: [(&str, HumanBody); 3] = [
     ("male", BODY_MALE),
@@ -86,10 +115,23 @@ fn formants(air: &mut HumanAirway, freqs: &[f64], a: &HumanArtic) -> (Vec<f64>, 
 }
 
 /// Articulatory vowel targets fitted to reference formants with the frequency-domain airway
-/// model. `calibrate vowels [male|female|child|all] [--out file]`
+/// model. `calibrate vowels [male|female|child|all] [--detail <name>] [--out file]`
+///
+/// A finer detail (`--detail high`, `ultra-anatomy`, …; see `voice/detail.rs`) is refit on its
+/// own airway to the formants the standard model gives each vowel, starting from the standard
+/// posture, so switching detail leaves each vowel where it was. Its table goes beside the
+/// standard one, `vowelTargets.<detail>.generated.json`, and needs the standard table first.
 pub fn vowels(a: &[String]) -> Result<(), String> {
-    let (rest, out) = out_option(a, VOWEL_TABLE)?;
+    let (a, detail) = detail_option(a)?;
+    let (rest, out) = out_option(&a, &vowel_table_path(detail))?;
     let which = rest.first().map(String::as_str).unwrap_or("all");
+    let standard: Option<VowelTable> = if detail == Detail::STANDARD {
+        None
+    } else {
+        let p = repo_path(VOWEL_TABLE);
+        let text = std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))?;
+        Some(serde_json::from_str(&text).map_err(|e| format!("{p}: {e}"))?)
+    };
     let n = 700;
     let freqs: Vec<f64> = (0..n)
         .map(|i| 120.0 * pow(4600.0 / 120.0, i as f64 / (n - 1) as f64))
@@ -103,14 +145,21 @@ pub fn vowels(a: &[String]) -> Result<(), String> {
         if which != "all" && which != bname {
             continue;
         }
-        let mut air = HumanAirway::new(96000.0, body);
+        // the standard model is 2× at 48 kHz: 96 kHz, as this tool always fitted it
+        let mut air = HumanAirway::with_detail(48000.0 * detail.oversample(48000.0) as f64, body, detail);
         let k = body.scale;
         let mut table: Vec<(String, Json)> = Vec::new();
         for vw in VOWELS {
-            let t = match bname {
+            let reference = match bname {
                 "male" => vw.male,
                 "female" => vw.female,
                 _ => vw.child,
+            };
+            // a finer detail fits the standard model's formants for this vowel, from its posture
+            let fit = standard.as_ref().and_then(|s| s.get(bname)).and_then(|t| t.get(vw.ipa)).filter(|v| v.formants.len() >= 3);
+            let t: [f64; 3] = match fit {
+                Some(v) => [v.formants[0], v.formants[1], v.formants[2]],
+                None => reference,
             };
             // initial guess from vowel-space position
             let mut x0 = vec![
@@ -132,6 +181,20 @@ pub fn vowels(a: &[String]) -> Result<(), String> {
                 x0 = vec![2.6, 7.35, 0.25, 0.5, 0.1, 0.65, 0.4, 0.2, 0.0];
             }
             let jaw_prior = 0.2 + 1.5 * vw.height;
+            const KEYS: [ArticKey; 9] = [
+                ArticKey::TbX,
+                ArticKey::TbY,
+                ArticKey::Jaw,
+                ArticKey::LipAp,
+                ArticKey::LipProt,
+                ArticKey::LipWidth,
+                ArticKey::Root,
+                ArticKey::Larynx,
+                ArticKey::TtCurl,
+            ];
+            // a refit starts from, and stays near, the standard posture
+            let anchor: Option<Vec<f64>> = fit.map(|v| KEYS.iter().zip(&x0).map(|(key, d)| v.artic.get(*key).unwrap_or(*d)).collect());
+            let start = anchor.clone().unwrap_or_else(|| x0.clone());
             let mut cost = |p: &[f64]| -> f64 {
                 let a = to_artic(p);
                 let (f, min_area) = formants(&mut air, &freqs, &a);
@@ -147,6 +210,20 @@ pub fn vowels(a: &[String]) -> Result<(), String> {
                 let min_ok = 0.22 * k * k;
                 if min_area < min_ok {
                     c += 0.4 * pow((min_ok - min_area) / min_ok, 2.0);
+                }
+                // A refit's question is narrower: the nearest posture to the standard one (which
+                // the priors below already balanced) that gives its formants on this airway. With
+                // those priors instead, a vowel whose standard posture they had traded against a
+                // reference it never reached (female /a/: lips at their limit, larynx raised)
+                // slid back towards them and lost 4–5 % of F1.
+                if let Some(p0) = &anchor {
+                    for j in 0..9 {
+                        c += 0.003 * pow(p[j] - p0[j], 2.0);
+                    }
+                    if vw.ipa != "ɝ" {
+                        c += 0.5 * p[8] * p[8];
+                    }
+                    return c;
                 }
                 c += 0.004 * pow(p[2] - jaw_prior, 2.0);
                 let open = vw.height > 0.6;
@@ -182,11 +259,13 @@ pub fn vowels(a: &[String]) -> Result<(), String> {
                 max_iter: Some(max_iter),
                 tol: None,
             };
-            let mut best = nelder_mead(
-                &mut cost,
-                &x0,
-                opts([0.4, 0.4, 0.3, 0.25, 0.3, 0.25, 0.3, 0.3, 0.2], 1800),
-            );
+            // a refit searches near its start; a fit from the vowel-space guess searches wide
+            let first_step = if anchor.is_some() {
+                [0.15, 0.15, 0.12, 0.1, 0.12, 0.1, 0.12, 0.12, 0.05]
+            } else {
+                [0.4, 0.4, 0.3, 0.25, 0.3, 0.25, 0.3, 0.3, 0.2]
+            };
+            let mut best = nelder_mead(&mut cost, &start, opts(first_step, 1800));
             // restart from the best point to escape shallow minima
             for _ in 0..2 {
                 let nb = nelder_mead(

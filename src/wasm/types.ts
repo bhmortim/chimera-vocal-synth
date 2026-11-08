@@ -53,6 +53,15 @@ export interface BodyMix {
   child: number;
 }
 
+/** How finely the human voice is simulated (mirrors the engine's `Detail`, voice/detail.rs). */
+export type Resolution = "standard" | "high" | "ultra";
+export interface Detail {
+  /** the internal rate and the measuring grid: ×1, ×1.5, ×2 the standard's */
+  resolution: Resolution;
+  /** the extra side cavities: piriform fossae left and right, valleculae, laryngeal ventricles, three more sinuses */
+  anatomy: boolean;
+}
+
 export interface HumanBody {
   name: string;
   /** overall size scale (1 = adult male) */

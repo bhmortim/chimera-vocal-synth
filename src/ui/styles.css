@@ -1248,6 +1248,13 @@ body {
   gap: 8px;
 }
 
+/* the simulation's detail: resolution chips and the extra-anatomy toggle */
+.detail-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .body-pad {
   display: block;
   cursor: crosshair;

@@ -31,6 +31,7 @@ pub mod control {
 }
 
 pub mod voice {
+    pub mod detail;
     pub mod human_airway;
     pub mod human_voice;
 }

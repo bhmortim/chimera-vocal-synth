@@ -52,7 +52,7 @@ export function transcribe(phrases: { segments: Segment[]; intonation?: string }
 }
 
 export function speakPhrases(phrases: { segments: Segment[]; intonation?: "statement" | "question" | "flat"; pause?: number; words?: string[] }[], o: { body: BodyMix; rate: number; f0: number }): SpokenPlan {
-  const plan = planPhrases(phrases, { body: o.body, t0: 0, rate: o.rate, f0: o.f0 });
+  const plan = planPhrases(phrases, { body: o.body, t0: 0, rate: o.rate, f0: o.f0, detail: engine.detail });
   const id = engine.schedule({ gestures: plan.gestures.map((g: Gesture) => ({ ...g, targets: { ...g.targets } })), segments: plan.segments, end: plan.end });
   current = { plan, offset: null, id, transcription: transcribe(phrases), words: wordSpans(phrases, plan) };
   for (const l of listeners) l(current);

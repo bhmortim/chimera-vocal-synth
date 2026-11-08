@@ -11,8 +11,23 @@ params."
 
 **Not built (yet):** the design's wider bestiary (only songbird, seal, alligator and elephant
 exist), the two-mass vocal folds, an IPA chart mode, the app-side EQ/reverb/limiter chain and
-in-app WAV export (the CLI renders WAVs; the app has a close-mic chain in WebAudio). Treat the
-code as the truth where this file disagrees.
+in-app WAV export (the CLI renders WAVs; the app has a close-mic chain in WebAudio), the
+sublingual and buccal cavities, and consonant areas recalibrated for the finer details below.
+Treat the code as the truth where this file disagrees.
+
+**Detail** (`voice/detail.rs`, the app's Std/High/Ultra and Anatomy+ controls): the human voice
+can run finer than the calibrated model. Resolution raises the internal rate ×1.5 or ×2 (3× or 4×
+oversampling at 48 kHz out); the sections shorten with it (0.39 → 0.26 → 0.20 cm) and the area
+function's measuring grid gets as many more lines. Anatomy adds side cavities: left and right
+piriform fossae (one combined branch otherwise), the valleculae, the laryngeal ventricles, and the
+second maxillary, sphenoid and frontal sinuses. The standard detail is the default and is what the
+golden tests record, bit for bit. Each finer detail has its own vowel table
+(`vowelTargets.<detail>.generated.json`, from `chimera calibrate vowels --detail <name>`): refit
+on its airway to the formants the standard model gives each vowel, as the nearest posture to the
+standard one, so switching detail leaves the vowels where they were (`tests/detail.rs` holds F1
+and F2 to 2%). The planners take the detail from their options (`PlanOptions.detail`, the `_at`
+variants of the singing and beatbox planners). Native cost, one core: standard 16%,
+high + anatomy 31%, ultra + anatomy 48% (`examples/bench.rs`).
 
 ## Overview
 

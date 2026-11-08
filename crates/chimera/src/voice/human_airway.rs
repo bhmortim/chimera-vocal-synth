@@ -5,7 +5,8 @@
 //! the turbulence noise sources at constrictions and the teeth.
 
 use crate::airway::network::{AirwayNetwork, Area, NoiseSpec, PortSpec, Tube, TubeSpec};
-use crate::anatomy::human::{HumanArtic, HumanBody, HumanFrame, HumanVocalTract};
+use crate::anatomy::human::{GridLines, HumanArtic, HumanBody, HumanFrame, HumanVocalTract};
+use crate::voice::detail::Detail;
 use crate::math::{js_max, js_min, js_round, smoothstep as smooth, sqrt};
 use crate::physics::{C_SOUND, RHO, WALL_NASAL, WALL_SOFT, WALL_TRACHEA};
 
@@ -21,6 +22,7 @@ pub struct HumanAirway {
     pub net: AirwayNetwork,
     pub tract: HumanVocalTract,
     pub body: HumanBody,
+    pub detail: Detail,
     pub trachea: Tube,
     pub pharynx: Tube,
     pub oral: Tube,
@@ -65,10 +67,18 @@ pub struct HumanAirway {
 }
 
 impl HumanAirway {
-    /// `fs`: internal sample rate (Hz).
+    /// `fs`: internal sample rate (Hz). The standard detail: see [`HumanAirway::with_detail`].
     pub fn new(fs: f64, body: HumanBody) -> Self {
+        Self::with_detail(fs, body, Detail::STANDARD)
+    }
+
+    /// An airway at a [`Detail`]: the measuring grid follows the resolution, and `anatomy` adds
+    /// the extra side cavities. The internal rate `fs` is the caller's ([`Detail::oversample`]);
+    /// the sections follow it. At [`Detail::STANDARD`] this builds the calibrated network exactly.
+    pub fn with_detail(fs: f64, body: HumanBody, detail: Detail) -> Self {
         let k = body.scale;
-        let tract = HumanVocalTract::new(body);
+        let mut tract = HumanVocalTract::new(body);
+        tract.lines = GridLines::scaled(detail.resolution.factor());
         let mut net = AirwayNetwork::new(fs);
         let dx_min = (C_SOUND / fs) / 0.93;
         // node counts from the shortest expected lengths (larynx raised, lips retracted)
@@ -99,7 +109,22 @@ impl HumanAirway {
             })
             .collect();
         let nasal = net.add_tube(TubeSpec::new("nasal", n_na, na_len, Area::Profile(na_areas)).wall(Some(WALL_NASAL)).perimeter(3.2).viscous(2.5));
-        let fossa = net.add_tube(TubeSpec::new("piriform", 3, 2.0 * k, Area::Uniform(0.9 * k * k)).wall(Some(WALL_SOFT)).perimeter(1.3));
+        // a side branch's sections: the standard detail's length at every resolution (its zeros,
+        // 4–8 kHz, sit within 0.5% with them, and finer ones would only cost time), never shorter
+        // than this rate's stability limit, at least two
+        let dx_side = dx_min * detail.resolution.factor();
+        let side = |len: f64| -> (f64, usize) {
+            let len = js_max(len, 2.0 * dx_side);
+            (len, js_max(2.0, (len / dx_side).floor()) as usize)
+        };
+        let fossa = if detail.anatomy {
+            // the left piriform fossa (the right one is added below)
+            let (len, n) = side(2.0 * k);
+            net.add_tube(TubeSpec::new("piriform_l", n, len, Area::Uniform(0.5 * k * k)).wall(Some(WALL_SOFT)).perimeter(1.3))
+        } else {
+            // both fossae as one branch
+            net.add_tube(TubeSpec::new("piriform", 3, 2.0 * k, Area::Uniform(0.9 * k * k)).wall(Some(WALL_SOFT)).perimeter(1.3))
+        };
 
         let lungs = net.add_pressure_node("lungs");
         let tr_a = 2.5 * k * k;
@@ -113,6 +138,32 @@ impl HumanAirway {
         // maxillary sinus (Helmholtz) on the nasal cavity
         let sinus = net.add_cavity("sinus", 14.0 * k * k * k, None);
         net.add_port(nasal.node(js_round(n_na as f64 * 0.45) as usize), sinus, PortSpec::new(0.12 * k * k, 0.5 * k).kinetic(0.0, 0.0).no_half_sections());
+        if detail.anatomy {
+            // pharynx node `cm` above the glottis (on the neutral 8.8 cm pharynx, as for the fossae)
+            let ph_node = |cm: f64| pharynx.node(((n_ph - 1) as f64).min(js_round((cm / 8.8) * n_ph as f64)) as usize);
+            // the right piriform fossa: shallower and narrower than the left, so the two
+            // quarter-wave zeros sit apart (≈5.0 and ≈4.4 kHz), as measured in speakers
+            let (len, n) = side(1.75 * k);
+            let fossa_r = net.add_tube(TubeSpec::new("piriform_r", n, len, Area::Uniform(0.42 * k * k)).wall(Some(WALL_SOFT)).perimeter(1.3));
+            net.connect(fossa_node, fossa_r.first_node());
+            // the valleculae: the pockets between the tongue root and the epiglottis (≈8 kHz zero)
+            let (len, n) = side(1.1 * k);
+            let valleculae = net.add_tube(TubeSpec::new("valleculae", n, len, Area::Uniform(0.4 * k * k)).wall(Some(WALL_SOFT)).perimeter(1.4));
+            net.connect(ph_node(3.4), valleculae.first_node());
+            // the laryngeal ventricles: pouches between the true and false folds, small Helmholtz
+            // resonators (≈6 kHz) just above the glottis, a little unequal
+            for (name, vol, area) in [("ventricle_l", 0.26, 0.10), ("ventricle_r", 0.22, 0.09)] {
+                let c = net.add_cavity(name, vol * k * k * k, None);
+                net.add_port(ph_node(0.4), c, PortSpec::new(area * k * k, 0.3 * k).kinetic(0.0, 0.0).no_half_sections());
+            }
+            // the paranasal sinuses beside the maxillary one above: the other maxillary, the
+            // sphenoid (back, by the nasopharynx) and the frontal (through its frontonasal duct);
+            // Helmholtz resonances ≈0.6, 1.0 and 0.85 kHz, pole-zero pairs in nasal sounds
+            for (name, at, vol, area, neck) in [("sinus_maxillary_l", 0.5, 15.5, 0.10, 0.55), ("sinus_sphenoid", 0.1, 6.0, 0.10, 0.5), ("sinus_frontal", 0.6, 3.5, 0.08, 1.0)] {
+                let c = net.add_cavity(name, vol * k * k * k, None);
+                net.add_port(nasal.node(js_round(n_na as f64 * at) as usize), c, PortSpec::new(area * k * k, neck * k).kinetic(0.0, 0.0).no_half_sections());
+            }
+        }
         let rad_lips = net.add_radiation(oral.last_node());
         let rad_nose = net.add_radiation(nasal.last_node());
         net.finalize();
@@ -120,6 +171,7 @@ impl HumanAirway {
             net,
             tract,
             body,
+            detail,
             trachea,
             pharynx,
             oral,
@@ -146,7 +198,9 @@ impl HumanAirway {
             seal_lo: 0.03,
             seal_hi: 0.4,
             seal_ease: 0.03,
-            base: None,
+            // made now, not on the first control step, so a new voice (a body or detail switch)
+            // renders its first block without allocating; `apply` overwrites them before use
+            base: Some([vec![0.0; n_ph], vec![0.0; n_or], vec![0.0; n_ph], vec![0.0; n_or]]),
             base_dt: 0.0,
             noise_list: Vec::with_capacity(8),
             scratch_frame: HumanFrame::with_capacity(),

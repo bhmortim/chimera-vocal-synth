@@ -5,7 +5,8 @@
 import workletUrl from "../worklet/processor.ts?worker&url";
 import { chimeraModule } from "../wasm/chimera.ts";
 import type { ToWorklet, FromWorklet, TelemetryMessage, PlannedMessage, CreatureTelemetryMessage } from "../worklet/protocol.ts";
-import type { BodyMix } from "../wasm/types.ts";
+import type { BodyMix, Detail } from "../wasm/types.ts";
+import { STANDARD_DETAIL } from "../wasm/detail.ts";
 import type { HumanArtic } from "../wasm/types.ts";
 import type { VoiceSource } from "../wasm/types.ts";
 
@@ -35,6 +36,7 @@ export class AudioEngine {
   private pendingTipFree: boolean | undefined;
   private pendingSource: Partial<VoiceSource> | null = null;
   private pendingCParams: Record<string, number> | null = null;
+  private currentDetail: Detail = STANDARD_DETAIL;
   private flushScheduled = false;
   private readyListeners = new Set<() => void>();
   private plannedListeners = new Set<(p: PlannedMessage) => void>();
@@ -212,6 +214,17 @@ export class AudioEngine {
 
   setBody(body: BodyMix): void {
     this.send({ type: "body", body });
+  }
+
+  /** How finely the voice is simulated (rebuilds its airway, as a body change does). */
+  setDetail(detail: Detail): void {
+    this.currentDetail = detail;
+    this.send({ type: "detail", detail });
+  }
+
+  /** The detail of the voice that plays what is planned now: plans take their vowels from its table. */
+  get detail(): Detail {
+    return this.currentDetail;
   }
 
   gate(level: number): void {

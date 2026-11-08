@@ -17,6 +17,7 @@ use super::planner::{PlanOptions, diphthong_parts, plan_utterance};
 use super::{Intonation, Plan, PlannedSegment, Segment, Syllable};
 use crate::control::score::{ControlKey, Gesture, Targets};
 use crate::math::{js_max, js_min};
+use crate::voice::detail::Detail;
 use serde::{Deserialize, Serialize};
 
 /// `440 · 2^((m − 69)/12)`, the same formula and operation order as `sing.ts`.
@@ -99,6 +100,11 @@ fn melisma(s: &Syllable) -> bool {
 
 /// Plan a whole melody: one utterance per phrase, so each phrase gets its own breath.
 pub fn plan_song(notes: &[SungNote], o: &SongOptions) -> Plan {
+    plan_song_at(notes, o, Detail::STANDARD)
+}
+
+/// [`plan_song`] for a voice at a detail: its vowels from that detail's calibrated table.
+pub fn plan_song_at(notes: &[SungNote], o: &SongOptions, detail: Detail) -> Plan {
     let beat = 60.0 / o.bpm;
     let mut gestures: Vec<Gesture> = Vec::new();
     let mut segments: Vec<PlannedSegment> = Vec::new();
@@ -161,7 +167,7 @@ pub fn plan_song(notes: &[SungNote], o: &SongOptions) -> Plan {
         }
         if !segs.is_empty() {
             // the planner lays segments out from t0 + 0.06: start so the first vowel lands on its beat
-            let plan = plan_utterance(&segs, &PlanOptions { body: o.body, t0: times[i] - first_onset - 0.06, f0: Some(hz_of(i)), intonation: Some(Intonation::Flat), sung: Some(true), ..Default::default() });
+            let plan = plan_utterance(&segs, &PlanOptions { body: o.body, t0: times[i] - first_onset - 0.06, f0: Some(hz_of(i)), intonation: Some(Intonation::Flat), sung: Some(true), detail, ..Default::default() });
             gestures.extend_from_slice(&plan.gestures);
             segments.extend(plan.segments);
             for (a, b) in vowel_spans {
@@ -212,6 +218,11 @@ pub struct NoteOnOptions {
 /// then this syllable's onset, then its vowel held open-ended. Every gesture gets `tag`; the
 /// pitch and vibrato get `tag + 1`, so a melisma can change pitch without ending the vowel.
 pub fn plan_note_on(syl: &Syllable, midi: f64, o: &NoteOnOptions) -> Vec<Gesture> {
+    plan_note_on_at(syl, midi, o, Detail::STANDARD)
+}
+
+/// [`plan_note_on`] for a voice at a detail: its vowels from that detail's calibrated table.
+pub fn plan_note_on_at(syl: &Syllable, midi: f64, o: &NoteOnOptions, detail: Detail) -> Vec<Gesture> {
     let hz = midi_to_hz(midi);
     let mut segs: Vec<Segment> = Vec::new();
     if let Some(l) = &o.legato_from {
@@ -220,7 +231,7 @@ pub fn plan_note_on(syl: &Syllable, midi: f64, o: &NoteOnOptions) -> Vec<Gesture
     segs.extend(consonants(&syl.onset, o.body, 0.7));
     let parts = diphthong_parts(&syl.nucleus.ipa);
     segs.push(Segment { ipa: parts.map_or(syl.nucleus.ipa.clone(), |p| p.0.to_string()), dur: Some(HOLD), f0: Some(hz), stress: Some(1), word_end: None });
-    let plan = plan_utterance(&segs, &PlanOptions { body: o.body, t0: LIVE_T0, f0: Some(hz), intonation: Some(Intonation::Flat), open_end: Some(true), ..Default::default() });
+    let plan = plan_utterance(&segs, &PlanOptions { body: o.body, t0: LIVE_T0, f0: Some(hz), intonation: Some(Intonation::Flat), open_end: Some(true), detail, ..Default::default() });
     let vowel = &plan.segments[plan.segments.len() - 1];
     let mut out: Vec<Gesture> = plan.gestures.iter().map(|g| g.tag(if g.targets.has(ControlKey::F0) { o.tag + 1.0 } else { o.tag })).collect();
     out.push(vibrato_gesture(vowel.t0, vowel.t1, o.vibrato, Some(o.tag + 1.0)));
@@ -245,12 +256,17 @@ pub fn plan_melisma(midi: f64, o: &MelismaOptions) -> Vec<Gesture> {
 
 /// Key released: the diphthong's glide and the coda (release the note's tags first).
 pub fn plan_note_off(syl: &Syllable, midi: f64, body: BodyMix) -> Vec<Gesture> {
+    plan_note_off_at(syl, midi, body, Detail::STANDARD)
+}
+
+/// [`plan_note_off`] for a voice at a detail: its vowels from that detail's calibrated table.
+pub fn plan_note_off_at(syl: &Syllable, midi: f64, body: BodyMix, detail: Detail) -> Vec<Gesture> {
     let hz = midi_to_hz(midi);
     let segs = tail(syl, body, hz);
     if segs.is_empty() {
         return Vec::new();
     }
-    plan_utterance(&segs, &PlanOptions { body, t0: LIVE_T0, f0: Some(hz), intonation: Some(Intonation::Flat), ..Default::default() }).gestures
+    plan_utterance(&segs, &PlanOptions { body, t0: LIVE_T0, f0: Some(hz), intonation: Some(Intonation::Flat), detail, ..Default::default() }).gestures
 }
 
 /// What follows a held vowel: the diphthong's glide (at the note's pitch) and the coda.

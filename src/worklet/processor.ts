@@ -9,6 +9,7 @@
 import { writeGestures, writeSteps, fromUtf8, utf8, CONTROL_KEYS } from "../wasm/wire.ts";
 import type { ToWorklet, FromWorklet, TelemetryMessage } from "./protocol.ts";
 import type { BodyMix, CreatureTelemetry } from "../wasm/types.ts";
+import { RESOLUTION_LEVEL } from "../wasm/detail.ts";
 
 // Minimal AudioWorkletGlobalScope typings
 declare const sampleRate: number;
@@ -107,6 +108,10 @@ class ChimeraProcessor extends AudioWorkletProcessor {
     switch (m.type) {
       case "body":
         x.engine_set_body(h, m.body.female, m.body.child);
+        this.postReady();
+        break;
+      case "detail":
+        x.engine_set_detail(h, RESOLUTION_LEVEL[m.detail.resolution] ?? 0, m.detail.anatomy ? 1 : 0);
         this.postReady();
         break;
       case "artic": {

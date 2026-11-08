@@ -65,6 +65,35 @@ function render(x: Exports, s: { body: string; fsOut: number; samples: number; o
 }
 
 describe("wasm engine", () => {
+  test.skipIf(!existsSync(WASM))("switches detail through the C ABI: finer sections that play, and back", () => {
+    const x = instance();
+    const fn = (name: string) => x[name] as F;
+    const h = fn("engine_new")(48000);
+    const sections = () => fn("engine_n_ph")(h) + fn("engine_n_or")(h);
+    const standard = sections();
+    fn("engine_set_gate")(h, 1);
+    for (const [level, anatomy] of [
+      [1, 0],
+      [2, 1],
+    ]) {
+      fn("engine_set_detail")(h, level, anatomy);
+      expect(sections()).toBeGreaterThan(standard);
+      let peak = 0;
+      for (let b = 0; b < 200; b++) {
+        const p = fn("engine_render")(h, 128);
+        for (const v of new Float32Array(x.memory.buffer, p, 128)) {
+          expect(Number.isFinite(v)).toBe(true);
+          peak = Math.max(peak, Math.abs(v));
+        }
+      }
+      expect(peak).toBeGreaterThan(0);
+      expect(peak).toBeLessThan(1);
+    }
+    fn("engine_set_detail")(h, 0, 0);
+    expect(sections()).toBe(standard);
+    fn("engine_free")(h);
+  });
+
   test.skipIf(!existsSync(WASM))("renders the voice scenarios bit-identically to the native build", () => {
     const proc = Bun.spawnSync(["cargo", "run", "-q", "--release", "-p", "chimera-wasm", "--example", "render_scenarios"], { cwd: ROOT });
     expect(proc.exitCode).toBe(0);

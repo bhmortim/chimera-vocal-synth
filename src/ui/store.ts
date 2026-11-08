@@ -4,7 +4,8 @@ import { DEFAULT_SOURCE, type VoiceSource } from "../wasm/engine.ts";
 import { NEUTRAL, restTip, type HumanArtic } from "../wasm/engine.ts";
 import { defaultF0, PRESETS, sameBody, type BodyMix } from "./body.ts";
 import { creatureById } from "../wasm/engine.ts";
-import type { ParamDef } from "../wasm/types.ts";
+import type { Detail, ParamDef } from "../wasm/types.ts";
+import { sameDetail, STANDARD_DETAIL } from "../wasm/detail.ts";
 import { BEAT_PRESETS, BASS_NOTE, beatReady, parseBeat, type BeatStep } from "../wasm/engine.ts";
 import { singNoteOn, singNoteOff, stopSinging, ensureDictionary } from "./singing.ts";
 import { stopSpeaking } from "./speech.ts";
@@ -36,6 +37,8 @@ interface State {
   startError: string | null;
   /** the body shown; while the body pad is dragged it runs ahead of the voice (see previewBody) */
   body: BodyMix;
+  /** how finely the voice is simulated: resolution and extra anatomy (wasm/detail.ts) */
+  detail: Detail;
   source: VoiceSource;
   artic: HumanArtic;
   tipFree: boolean;
@@ -73,6 +76,8 @@ interface State {
   setBody: (b: BodyMix) => void;
   /** show this body without rebuilding the voice yet (a drag in progress; setBody commits it) */
   previewBody: (b: BodyMix) => void;
+  /** change how finely the voice is simulated (rebuilds its airway, keeping pitch and posture) */
+  setDetail: (d: Detail) => void;
   setSource: (v: Partial<VoiceSource>) => void;
   setArtic: (v: Partial<HumanArtic>, tipFree?: boolean) => void;
   setVolume: (v: number) => void;
@@ -122,6 +127,7 @@ export const useStore = create<State>((set, get) => ({
   starting: false,
   startError: null,
   body: PRESETS.male,
+  detail: STANDARD_DETAIL,
   source: { ...DEFAULT_SOURCE },
   artic: (() => {
     const tip = restTip(NEUTRAL.jaw, NEUTRAL.tbX, NEUTRAL.tbY);
@@ -158,7 +164,7 @@ export const useStore = create<State>((set, get) => ({
     if (m === "beatbox") {
       // a beatboxer waits with the jaw nearly closed; the sounds bring their own breath
       set({ hold: false });
-      get().setArtic(beatReady(get().body));
+      get().setArtic(beatReady(get().body, get().detail));
       engine.setMic(get().mic);
     }
     updateGate(get());
@@ -246,6 +252,7 @@ export const useStore = create<State>((set, get) => ({
         const s = get();
         engine.setVolume(s.volume);
         if (!sameBody(s.body, PRESETS.male)) engine.setBody(s.body);
+        if (!sameDetail(s.detail, STANDARD_DETAIL)) engine.setDetail(s.detail);
         engine.setSource(s.source);
         engine.setArtic(s.artic, s.tipFree);
         if (s.mode === "bestiary") engine.setCreature(s.creature, s.cparams[s.creature]);
@@ -274,6 +281,15 @@ export const useStore = create<State>((set, get) => ({
     engine.setBody(b);
   },
   previewBody: (b) => set({ body: b }),
+  setDetail: (d) => {
+    if (sameDetail(d, get().detail)) return;
+    session++;
+    // as with a body switch, the rebuilt voice starts without the old one's score
+    if (get().mode === "sing") stopSinging();
+    if (get().mode === "speak") stopSpeaking();
+    set({ detail: d });
+    engine.setDetail(d);
+  },
   setSource: (v) => {
     set((s) => ({ source: { ...s.source, ...v } }));
     engine.setSource(v);
@@ -329,7 +345,7 @@ export const useStore = create<State>((set, get) => ({
       singNoteOff(midi, s.body);
       return;
     }
-    if (s.mode === "beatbox" && !held.length) s.setArtic({ lipAp: beatReady(s.body).lipAp, velum: NEUTRAL.velum });
+    if (s.mode === "beatbox" && !held.length) s.setArtic({ lipAp: beatReady(s.body, s.detail).lipAp, velum: NEUTRAL.velum });
     if (held.length) {
       // fall back to the most recent note still held (legato)
       const last = held[held.length - 1];

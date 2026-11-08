@@ -19,6 +19,7 @@ import { SingRight, singInfo, singWords } from "./components/SingPanel.tsx";
 import { playDemo, DEMO_SONGS } from "./singing.ts";
 import type { Mode } from "./store.ts";
 import type { BodyName } from "../worklet/protocol.ts";
+import type { Resolution } from "../wasm/types.ts";
 import { BodyPad } from "./components/BodyPad.tsx";
 import { bodyLabel, presetOf, PRESETS } from "./body.ts";
 
@@ -39,6 +40,8 @@ function TopBar() {
   const start = useStore((s) => s.start);
   const body = useStore((s) => s.body);
   const setBody = useStore((s) => s.setBody);
+  const detail = useStore((s) => s.detail);
+  const setDetail = useStore((s) => s.setDetail);
   const volume = useStore((s) => s.volume);
   const setVolume = useStore((s) => s.setVolume);
   const mode = useStore((s) => s.mode);
@@ -79,6 +82,21 @@ function TopBar() {
             ]}
           />
           <BodyPad />
+        </div>
+      )}
+      {mode !== "bestiary" && (
+        <div className="detail-control" title="Simulation detail: Std is the calibrated model; High and Ultra run the airway at 1.5× and 2× the rate with finer sections and geometry. Anatomy+ adds the piriform fossae left and right, the valleculae, the laryngeal ventricles and three more sinuses.">
+          <Segmented<Resolution>
+            label="Resolution"
+            value={detail.resolution}
+            onChange={(resolution) => setDetail({ ...detail, resolution })}
+            options={[
+              { value: "standard", label: "Std" },
+              { value: "high", label: "High" },
+              { value: "ultra", label: "Ultra" },
+            ]}
+          />
+          <Toggle label="Anatomy+" checked={detail.anatomy} onChange={(anatomy) => setDetail({ ...detail, anatomy })} />
         </div>
       )}
       <div className="topbar-right">

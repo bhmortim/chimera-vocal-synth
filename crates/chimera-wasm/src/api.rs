@@ -13,6 +13,7 @@ use chimera::phonetics::planner::{self, PhraseInput, PlanOptions};
 use chimera::phonetics::sing::{self, MelismaOptions, NoteOnOptions, SongOptions, SungNote};
 use chimera::phonetics::english::EnglishG2P;
 use chimera::phonetics::{Segment, Syllable, ipa, songs, syllables, vowel_data};
+use chimera::voice::detail::Detail;
 use chimera::voice::human_airway::HumanAirway;
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -20,6 +21,7 @@ use std::cell::RefCell;
 struct Model {
     id: usize,
     body: BodyMix,
+    detail: Detail,
     fs: f64,
     airway: HumanAirway,
 }
@@ -49,6 +51,20 @@ fn to_json<T: serde::Serialize>(v: &T) -> Res {
     serde_json::to_value(v).map_err(|e| e.to_string())
 }
 
+/// The request's optional `detail` (the standard model's when absent).
+fn detail(req: &Value) -> Result<Detail, String> {
+    Ok(arg::<Option<Detail>>(req, "detail")?.unwrap_or_default())
+}
+
+/// A detail's calibrated vowels as the UI reads them: body → IPA → { artic, formants }.
+fn vowel_targets_json(detail: Detail) -> Value {
+    planner::vowel_table_for(detail)
+        .iter()
+        .map(|(body, t)| (body.clone(), Value::Object(t.iter().map(|(ipa, v)| (ipa.clone(), json!({ "artic": v.artic, "formants": v.formants }))).collect())))
+        .collect::<serde_json::Map<String, Value>>()
+        .into()
+}
+
 fn model<'a>(st: &'a mut State, req: &Value) -> Result<&'a mut Model, String> {
     let id: usize = arg(req, "model")?;
     st.models.iter_mut().find(|m| m.id == id).ok_or_else(|| format!("no model {id}"))
@@ -64,11 +80,12 @@ fn dispatch(st: &mut State, req: &Value) -> Res {
             // the main-thread mirror of the worklet's airway: same topology and node counts
             let body: BodyMix = arg(req, "body")?;
             let fs: f64 = arg(req, "sampleRate")?;
-            let m = if fs > 60000.0 { 1.0 } else { 2.0 };
-            let i = match st.models.iter().position(|x| x.body == body && x.fs == fs * m) {
+            let detail = detail(req)?;
+            let m = detail.oversample(fs) as f64;
+            let i = match st.models.iter().position(|x| x.body == body && x.detail == detail && x.fs == fs * m) {
                 Some(i) => i,
                 None => {
-                    st.models.push(Model { id: st.next_model, body, fs: fs * m, airway: HumanAirway::new(fs * m, body.body()) });
+                    st.models.push(Model { id: st.next_model, body, detail, fs: fs * m, airway: HumanAirway::with_detail(fs * m, body.body(), detail) });
                     st.next_model += 1;
                     st.models.len() - 1
                 }
@@ -142,14 +159,16 @@ fn dispatch(st: &mut State, req: &Value) -> Res {
         // so the UI can find a word's span in a plan's timeline
         "plannedCounts" => to_json(&arg::<Vec<String>>(req, "ipa")?.iter().map(|s| planner::expand(s).map_or(1, |p| p.len())).collect::<Vec<_>>()),
         "planPhrases" => to_json(&planner::plan_phrases(&arg::<Vec<PhraseInput>>(req, "phrases")?, &arg::<PlanOptions>(req, "options")?)),
-        "planSong" => to_json(&sing::plan_song(&arg::<Vec<SungNote>>(req, "notes")?, &arg::<SongOptions>(req, "options")?)),
-        "planNoteOn" => to_json(&sing::plan_note_on(&arg::<Syllable>(req, "syl")?, arg(req, "midi")?, &arg::<NoteOnOptions>(req, "options")?)),
-        "planNoteOff" => to_json(&sing::plan_note_off(&arg::<Syllable>(req, "syl")?, arg(req, "midi")?, arg::<BodyMix>(req, "body")?)),
+        "planSong" => to_json(&sing::plan_song_at(&arg::<Vec<SungNote>>(req, "notes")?, &arg::<SongOptions>(req, "options")?, detail(req)?)),
+        "planNoteOn" => to_json(&sing::plan_note_on_at(&arg::<Syllable>(req, "syl")?, arg(req, "midi")?, &arg::<NoteOnOptions>(req, "options")?, detail(req)?)),
+        "planNoteOff" => to_json(&sing::plan_note_off_at(&arg::<Syllable>(req, "syl")?, arg(req, "midi")?, arg::<BodyMix>(req, "body")?, detail(req)?)),
         "planMelisma" => to_json(&sing::plan_melisma(arg(req, "midi")?, &arg::<MelismaOptions>(req, "options")?)),
         // ---------------------------------------------------------------- beatbox
         "parseBeat" => to_json(&beatbox::parse_beat(&arg::<String>(req, "text")?)),
         "formatBeat" => Ok(Value::String(beatbox::format_beat(&arg::<Vec<Option<BeatStep>>>(req, "steps")?))),
-        "beatReady" => to_json(&beatbox::beat_ready(arg::<BodyMix>(req, "body")?)),
+        "beatReady" => to_json(&beatbox::beat_ready_at(arg::<BodyMix>(req, "body")?, detail(req)?)),
+        // a detail's calibrated vowels (the catalog holds the standard model's)
+        "vowelTargets" => Ok(vowel_targets_json(detail(req)?)),
         "leadIn" => Ok(json!(BeatPlayer::lead_in(&arg::<String>(req, "id")?, arg::<BodyMix>(req, "body")?))),
         _ => Err(format!("unknown fn {name}")),
     }
@@ -161,10 +180,7 @@ fn catalog() -> Res {
     use chimera::control::articulators::ARTIC_SPECS;
     use chimera::voice::human_voice::DEFAULT_SOURCE;
     let specs: serde_json::Map<String, Value> = ArticKey::ALL.iter().map(|k| (k.name().to_string(), serde_json::to_value(ARTIC_SPECS[k.index()]).unwrap())).collect();
-    let vowels: serde_json::Map<String, Value> = planner::vowel_table()
-        .iter()
-        .map(|(body, t)| (body.clone(), Value::Object(t.iter().map(|(ipa, v)| (ipa.clone(), json!({ "artic": v.artic, "formants": v.formants }))).collect())))
-        .collect();
+    let vowels = vowel_targets_json(Detail::STANDARD);
     Ok(json!({
         "neutral": NEUTRAL,
         "bodies": { "male": BODY_MALE, "female": BODY_FEMALE, "child": BODY_CHILD },

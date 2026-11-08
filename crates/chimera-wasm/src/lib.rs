@@ -38,6 +38,7 @@ use chimera::anatomy::human::{ArticPatch, BodyMix, N_ARTIC};
 use chimera::control::score::{Gesture, Label, N_CONTROL, Targets};
 use chimera::engine::{Engine, MAX_SCHEDULE};
 use chimera::phonetics::beatbox::BeatStep;
+use chimera::voice::detail::{Detail, Resolution};
 use chimera::voice::human_voice::{SourcePatch, VoiceTelemetry};
 
 pub const GESTURE_RECORD: usize = 272;
@@ -276,6 +277,18 @@ pub unsafe extern "C" fn engine_set_gate(h: *mut Handle, level: f64) {
 pub unsafe extern "C" fn engine_set_body(h: *mut Handle, female: f64, child: f64) {
     let h = handle!(h);
     h.engine.set_body(BodyMix::new(female, child));
+    h.engine.telemetry(&mut h.tele); // resize the telemetry buffers for the new voice
+}
+
+/// How finely the human voice is simulated: `resolution` 0 standard, 1 high, 2 ultra;
+/// `anatomy` nonzero adds the extra side cavities. Allocates (a new airway network).
+///
+/// # Safety
+/// `h` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn engine_set_detail(h: *mut Handle, resolution: u32, anatomy: u32) {
+    let h = handle!(h);
+    h.engine.set_detail(Detail { resolution: Resolution::from_level(resolution), anatomy: anatomy != 0 });
     h.engine.telemetry(&mut h.tele); // resize the telemetry buffers for the new voice
 }
 
