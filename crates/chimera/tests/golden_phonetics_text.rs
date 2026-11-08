@@ -121,7 +121,9 @@ fn syllables_match_typescript() {
 fn songs_and_vowel_data_match_typescript() {
     let fx = load("phonetics-data");
     let mut f = Vec::new();
-    check("demo songs", &fx["songs"], songs::DEMO_SONGS, &mut f);
+    // the songs the TypeScript engine had; the ones added since are checked in demo_songs.rs
+    let ts = fx["songs"].as_array().map_or(0, |a| a.len());
+    check("demo songs", &fx["songs"], &songs::DEMO_SONGS[..ts.min(songs::DEMO_SONGS.len())], &mut f);
     check("vowel refs", &fx["vowels"], vowel_data::VOWELS, &mut f);
     report("data", 2, f);
 }
