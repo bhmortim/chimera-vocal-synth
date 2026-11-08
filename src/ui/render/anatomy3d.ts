@@ -16,7 +16,7 @@
  * camera, which looks at the side view the 2D screen shows), glottis at the origin.
  */
 import * as THREE from "three";
-import type { HumanArtic, HumanFrame } from "../../wasm/types.ts";
+import type { HumanArtic, HumanFrame, Resolution } from "../../wasm/types.ts";
 import { NEUTRAL } from "../../wasm/engine.ts";
 import type { TelemetryMessage } from "../../worklet/protocol.ts";
 import type { VoiceModel } from "../analysis.ts";
@@ -72,6 +72,11 @@ const UPPER_TEETH = [[0.85, 1.05, 0.7], [0.68, 0.95, 0.65], [0.78, 1.1, 0.8], [0
 const LOWER_TEETH = [[0.54, 0.9, 0.6], [0.6, 0.92, 0.62], [0.7, 1.0, 0.75], [0.7, 0.85, 0.8], [0.72, 0.8, 0.85], [1.1, 0.72, 1.05], [1.05, 0.7, 1.0]] as const;
 /** the lips' patch reaches this far to each side (template cm), past the widest mouth */
 const LIP_HALF = 3.0;
+
+/** airway rings kept per frame: the engine's GRID_CAPACITY (anatomy/human.rs) */
+const RINGS = 128;
+/** surface density per resolution: the engine's resolution factor (voice/detail.rs) */
+const DENSITY: Record<Resolution, number> = { standard: 1, high: 1.5, ultra: 2 };
 /** superellipse exponent of the back half of a cross-section */
 const PB = 2.2;
 
@@ -660,8 +665,15 @@ export class Anatomy3D {
   private sparkSeed = 7;
   /** the body's scale this frame */
   private k = 1;
-  /** the airway's cross-sections this frame: centre, the grid line's direction, half-gap, half-width */
-  private ring = { n: 0, s: new Float64Array(80), cx: new Float64Array(80), cy: new Float64Array(80), ux: new Float64Array(80), uy: new Float64Array(80), a: new Float64Array(80), b: new Float64Array(80) };
+  /** the airway's cross-sections this frame: centre, the grid line's direction, half-gap, half-width
+   *  (room for the engine's GRID_CAPACITY: the ultra grid has up to 97 lines) */
+  private ring = { n: 0, s: new Float64Array(RINGS), cx: new Float64Array(RINGS), cy: new Float64Array(RINGS), ux: new Float64Array(RINGS), uy: new Float64Array(RINGS), a: new Float64Array(RINGS), b: new Float64Array(RINGS) };
+  /** curve and rib density of the vocal tract's surfaces: the detail's resolution factor (1 at standard) */
+  private dens = 1;
+  /** `n` segments at this frame's density (`n` itself at standard, so the standard view is unchanged) */
+  private seg(n: number): number {
+    return Math.round(n * this.dens);
+  }
   private readonly v3 = new THREE.Vector3();
   /** the narrowest constriction this frame (for the measurement label), body cm */
   caliper: { x: number; y: number; z: number; area: number } | null = null;
@@ -790,6 +802,7 @@ export class Anatomy3D {
     const line = (pts: Vec[], color: string, w: number, o: { alpha?: number; hot?: boolean; close?: boolean } = {}, fade = cut) => B.line(flat(pts), pts.length, color, w, { ...o, alpha: (o.alpha ?? 1) * fade });
     const rot = (x: number, y: number, ang: number): [number, number] => (ang === 0 ? [x, y] : rotXY(x, y, C, ang));
     this.k = k;
+    this.dens = DENSITY[model.detail.resolution] ?? 1;
 
     // ---- the fixed and jaw-carried structures
     for (const g of rest.fixed) for (const l of g.lines) B.line(l, l.length / 3, g.color, g.width, { alpha: g.alpha, hot: g.hot });
@@ -834,6 +847,7 @@ export class Anatomy3D {
     this.velum(f, k);
     this.epiglottis(f, k, artCut);
     this.larynx(model, f, a, tele, k, dt, rest.head.y0, cut);
+    if (model.detail.anatomy) this.cavities(f, k);
 
     const tongueOutline = flat(f.tongue);
     const soft = (v: Vec[], it: number) => flat(chaikin(v.map((p) => [p.x, p.y] as Pt), it).map(([x, y]) => ({ x, y })));
@@ -1055,7 +1069,7 @@ export class Anatomy3D {
       }
     });
     // the upper surface from the root over the dorsum to the tip, in even stations
-    const N = 22;
+    const N = this.seg(22);
     const st = resample(T.slice(0, iTip + 1), N);
     const lateral = clamp01(a.lateral);
     const frames = st.map((p, i) => {
@@ -1073,9 +1087,10 @@ export class Anatomy3D {
       return [fr.p.x - fr.nx * drop, fr.p.y - fr.ny * drop, fr.W * Math.sin(ph)];
     };
     const P = this.tmp;
+    const across = this.seg(12);
     for (let i = 1; i < N - 1; i += 2) {
       P.reset();
-      for (let j = 0; j <= 12; j++) P.p(...at(frames[i], -Math.PI / 2 + (Math.PI * j) / 12));
+      for (let j = 0; j <= across; j++) P.p(...at(frames[i], -Math.PI / 2 + (Math.PI * j) / across));
       this.beams.poly(P, V.green, 1.0, { alpha: 0.5 });
     }
     for (const ph of [-Math.PI / 2, -Math.PI / 4, Math.PI / 4, Math.PI / 2]) {
@@ -1115,10 +1130,11 @@ export class Anatomy3D {
     }
     const P = this.tmp;
     const cam = this.eye;
+    const around = this.seg(24);
     for (let j = 0; j < R.n; j += 2) {
       P.reset();
-      for (let i = 0; i <= 24; i++) {
-        const an = (i / 24) * Math.PI * 2, c = Math.cos(an) * R.a[j], sn = Math.sin(an) * R.b[j];
+      for (let i = 0; i <= around; i++) {
+        const an = (i / around) * Math.PI * 2, c = Math.cos(an) * R.a[j], sn = Math.sin(an) * R.b[j];
         P.p(R.cx[j] + R.ux[j] * c, R.cy[j] + R.uy[j] * c, sn);
       }
       // the ring's plane faces along the tract (its normal is across the grid line)
@@ -1140,8 +1156,9 @@ export class Anatomy3D {
     const gl = f.glottis;
     for (const u of [0.3, 0.65]) {
       const cx = gl.x + (R.cx[0] - gl.x) * u, cy = gl.y + (R.cy[0] - gl.y) * u, r = (0.55 + 0.25 * u) * k;
+      const n = this.seg(20);
       P.reset();
-      for (let i = 0; i <= 20; i++) P.p(cx + r * Math.cos((i / 20) * Math.PI * 2), cy, r * Math.sin((i / 20) * Math.PI * 2));
+      for (let i = 0; i <= n; i++) P.p(cx + r * Math.cos((i / n) * Math.PI * 2), cy, r * Math.sin((i / n) * Math.PI * 2));
       this.beams.poly(P, V.blueDim, 0.9, { alpha: 0.6 });
     }
   }
@@ -1228,8 +1245,9 @@ export class Anatomy3D {
     }
     if (mi < 0 || ma >= 1.2 || mi >= R.n) return;
     const P = this.tmp.reset();
-    for (let i = 0; i <= 24; i++) {
-      const an = (i / 24) * Math.PI * 2, c = Math.cos(an) * R.a[mi], sn = Math.sin(an) * R.b[mi];
+    const around = this.seg(24);
+    for (let i = 0; i <= around; i++) {
+      const an = (i / around) * Math.PI * 2, c = Math.cos(an) * R.a[mi], sn = Math.sin(an) * R.b[mi];
       P.p(R.cx[mi] + R.ux[mi] * c, R.cy[mi] + R.uy[mi] * c, sn);
     }
     this.beams.poly(P, V.white, 1.3, { hot: true });
@@ -1256,9 +1274,12 @@ export class Anatomy3D {
       return [q.x + q.nx * off, q.y + q.ny * off, q.W * u];
     };
     const P = this.tmp;
-    for (const i of [1, 3, 5, 7, 9].filter((i) => i <= n)) {
+    // ribs: every other station, every station at finer resolutions
+    const ribs = this.dens > 1 ? Array.from({ length: n }, (_, i) => i + 1) : [1, 3, 5, 7, 9];
+    const across = this.seg(12);
+    for (const i of ribs.filter((i) => i <= n)) {
       P.reset();
-      for (let j = 0; j <= 12; j++) P.p(...at(fr[i], -1 + j / 6));
+      for (let j = 0; j <= across; j++) P.p(...at(fr[i], -1 + (2 * j) / across));
       this.beams.poly(P, V.white, 1.0, { alpha: 0.5 });
     }
     for (const u of [-1, 1]) {
@@ -1278,13 +1299,13 @@ export class Anatomy3D {
     const back = { x: -dy, y: dx }; // the side away from the tongue
     const halfW = (u: number) => (0.22 + 0.9 * Math.pow(Math.sin((u * Math.PI) / 2), 1.3)) * k;
     const P = this.tmp.reset();
-    const N = 10;
+    const N = this.seg(10), M = this.seg(12);
     for (let i = 0; i <= N; i++) {
       const u = i / N, w = halfW(u), curl = 0.28 * k * (w / (1.12 * k));
       P.p(base.x + dx * l * u + back.x * curl, base.y + dy * l * u + back.y * curl, w);
     }
-    for (let i = 1; i < 12; i++) {
-      const z = halfW(1) * (1 - (2 * i) / 12);
+    for (let i = 1; i < M; i++) {
+      const z = halfW(1) * (1 - (2 * i) / M);
       const curl = 0.28 * k * (Math.abs(z) / (1.12 * k)) ** 2;
       P.p(tip.x + back.x * curl + dx * 0.08 * k * (1 - (z / halfW(1)) ** 2), tip.y + back.y * curl + dy * 0.08 * k * (1 - (z / halfW(1)) ** 2), z);
     }
@@ -1294,6 +1315,116 @@ export class Anatomy3D {
     }
     this.beams.poly(P, V.blue, 1.1, { alpha: 0.75 });
     this.beams.line(new Float32Array([base.x, base.y, 0, tip.x, tip.y, 0]), 2, V.blue, 2.1, { alpha: 0.85 * cut });
+  }
+
+  // ------------------------------------------------------------------ the extra anatomy (Anatomy+)
+  /**
+   * The side cavities the finer voice simulates, drawn where its airway attaches them: the
+   * piriform fossae and the laryngeal ventricles on the larynx (so they ride with it), the
+   * valleculae on the epiglottis's front, the paranasal sinuses round the nasal cavity; and the
+   * uvula on the soft palate's free end. The cavities are amber, so what the setting adds stands
+   * out from the standard model's anatomy.
+   */
+  private cavities(f: HumanFrame, k: number): void {
+    const B = this.beams, g = f.glottis;
+    const around = this.seg(16), levels = this.seg(5);
+    const at = (x: number, y: number, z: number): V3 => [g.x + x * k, g.y + y * k, z * k];
+    const C = new Lines();
+    // a pocket opening at (x, y, z) and narrowing to its apex `depth` below (larynx cm)
+    const pocket = (x: number, y: number, z: number, depth: number, rx: number, rz: number) => {
+      const r = (t: number) => Math.pow(1 - t, 0.55);
+      for (let i = 0; i < levels; i++) {
+        const t = i / levels;
+        C.ellipse(at(x, y - depth * t, z), [rx * r(t) * k, 0, 0], [0, 0, rz * r(t) * k], around);
+      }
+      for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        for (let i = 0; i <= levels; i++) {
+          const t = i / levels;
+          C.p(...at(x + ax * rx * r(t), y - depth * t, z + az * rz * r(t)));
+        }
+        C.end();
+      }
+    };
+    // the piriform fossae, either side of the larynx's inlet inside the thyroid plates: the left
+    // (−z) 2.0 cm deep, the right 1.75 cm, as the airway has them
+    pocket(-0.1, 2.5, -1.2, 2.0, 0.42, 0.32);
+    pocket(-0.1, 2.5, 1.2, 1.75, 0.4, 0.3);
+    // the laryngeal ventricles: pouches between the true and the false folds, reaching outward
+    for (const [s, sc] of [[-1, 1.0], [1, 0.92]] as const) {
+      const c = at(0.1, 0.27, s * 0.72);
+      C.ellipse(c, [0.42 * sc * k, 0, 0], [0, 0, 0.2 * sc * k], around);
+      C.ellipse(c, [0.42 * sc * k, 0, 0], [0, 0.17 * sc * k, 0], around);
+    }
+    // the valleculae: two pockets on the epiglottis's front, either side of the midline fold,
+    // opening upwards and sinking towards its base
+    const [base, tip] = f.epiglottis;
+    let dx = tip.x - base.x, dy = tip.y - base.y;
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len;
+    dy /= len;
+    const front = { x: dy, y: -dx }; // towards the tongue
+    for (const s of [-1, 1]) {
+      const cx = base.x + dx * len * 0.35 + front.x * 0.32 * k, cy = base.y + dy * len * 0.35 + front.y * 0.32 * k, z = s * 0.5 * k;
+      C.ellipse([cx, cy, z], [front.x * 0.3 * k, front.y * 0.3 * k, 0], [0, 0, 0.26 * k], around);
+      for (let q = 0; q < 4; q++) {
+        const an = (q * Math.PI) / 2, cs = Math.cos(an) * 0.3 * k;
+        C.p(cx + front.x * cs, cy + front.y * cs, z + Math.sin(an) * 0.26 * k).p(cx - dx * 0.75 * k, cy - dy * 0.75 * k, z).end();
+      }
+    }
+    for (const l of C.lines) B.line(l, l.length / 3, V.amber, 1.0, { alpha: 0.75 });
+
+    // the paranasal sinuses, round the nasal cavity's midline outline
+    const N = f.nasalCavity;
+    if (N.length > 2) {
+      const S = new Lines();
+      let x0 = Infinity, x1 = -Infinity, top = -Infinity;
+      for (const p of N) {
+        x0 = Math.min(x0, p.x);
+        x1 = Math.max(x1, p.x);
+        top = Math.max(top, p.y);
+      }
+      const blob = (c: V3, rx: number, ry: number, rz: number) => {
+        S.ellipse(c, [rx, 0, 0], [0, 0, rz], around);
+        S.ellipse(c, [rx, 0, 0], [0, ry, 0], around);
+        S.ellipse(c, [0, ry, 0], [0, 0, rz], around);
+      };
+      const mid = x0 + 0.55 * (x1 - x0);
+      // maxillary, in the cheekbones beside the cavity (the left a little larger, as simulated)
+      blob([mid, top - 0.5 * k, -2.3 * k], 1.55 * k, 1.25 * k, 0.95 * k);
+      blob([mid, top - 0.5 * k, 2.3 * k], 1.5 * k, 1.2 * k, 0.9 * k);
+      // frontal, above the root of the nose
+      for (const s of [-1, 1]) blob([x1 - 0.6 * k, top + 2.4 * k, s * 0.8 * k], 0.55 * k, 0.85 * k, 0.65 * k);
+      // sphenoid, behind and above the nasopharynx
+      blob([x0 - 0.35 * k, top + 0.9 * k, 0], 1.0 * k, 0.85 * k, 1.05 * k);
+      for (const l of S.lines) B.line(l, l.length / 3, V.amber, 0.9, { alpha: 0.45 });
+    }
+
+    // the uvula, hanging from the soft palate's free end and curving down
+    const v = f.velum, n = Math.floor(v.length / 2) - 1;
+    if (n >= 2) {
+      const mid = (i: number) => ({ x: (v[i].x + v[v.length - 1 - i].x) / 2, y: (v[i].y + v[v.length - 1 - i].y) / 2 });
+      const end = mid(n), before = mid(n - 1);
+      let ux = end.x - before.x, uy = end.y - before.y;
+      const ul = Math.hypot(ux, uy) || 1;
+      ux /= ul;
+      uy /= ul;
+      const c = (t: number): [number, number] => [end.x + ux * 0.9 * k * t, end.y + uy * 0.9 * k * t - 0.25 * k * t * t];
+      const r = (t: number) => 0.2 * k * Math.pow(Math.sin(Math.PI * (0.05 + 0.95 * t)), 0.7);
+      const U = new Lines();
+      for (const t of [0.25, 0.5, 0.75]) {
+        const [x, y] = c(t);
+        U.ellipse([x, y, 0], [-uy * r(t), ux * r(t), 0], [0, 0, r(t)], around);
+      }
+      const steps = 2 * levels;
+      for (const s of [-1, 1]) {
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps, [x, y] = c(t);
+          U.p(x - uy * r(t) * s, y + ux * r(t) * s, 0);
+        }
+        U.end();
+      }
+      for (const l of U.lines) B.line(l, l.length / 3, V.white, 1.0, { alpha: 0.6 });
+    }
   }
 
   /** the larynx's cartilages and folds round the glottis, the trachea down to the neck's end (bottom) */
@@ -1312,9 +1443,10 @@ export class Anatomy3D {
       pl([[-0.6, -0.6, s * 1.85], [-0.45, -1.25, s * 1.7]]);
     }
     // cricoid: a signet ring, low in front and tall behind
+    const cn = this.seg(28);
     for (const [y0, rise] of [[-1.75, 0.15], [-1.4, 1.1]] as const) {
-      for (let i = 0; i <= 28; i++) {
-        const an = (i / 28) * Math.PI * 2;
+      for (let i = 0; i <= cn; i++) {
+        const an = (i / cn) * Math.PI * 2;
         L.p(...at(0.1 + 1.0 * Math.cos(an), y0 + (rise * (1 - Math.cos(an))) / 2, 1.1 * Math.sin(an)));
       }
       L.end();
@@ -1323,7 +1455,7 @@ export class Anatomy3D {
     // trachea: C-shaped rings, open at the back
     const T = new Lines();
     const top = g.y - 2.1 * k, cx = g.x + 0.08 * k;
-    for (let y = top; y > bottom; y -= 0.5 * k) T.ellipse([cx, y, 0], [0.82 * k, 0, 0], [0, 0, 0.95 * k], 20, -0.8 * Math.PI, 0.8 * Math.PI);
+    for (let y = top; y > bottom; y -= (0.5 * k) / this.dens) T.ellipse([cx, y, 0], [0.82 * k, 0, 0], [0, 0, 0.95 * k], this.seg(20), -0.8 * Math.PI, 0.8 * Math.PI);
     for (const s of [1, -1]) T.p(cx, top, s * 0.95 * k).p(cx, bottom, s * 0.95 * k).end();
     for (const l of T.lines) B.line(l, l.length / 3, V.blueDim, 0.9, { alpha: 0.85 });
     // its front and back walls on the midline, as the 2D view draws them
@@ -1331,9 +1463,10 @@ export class Anatomy3D {
     // hyoid: a U open at the back, riding above the larynx
     const H = new Lines();
     const hy = { x: model.tract.P(1.6, 0).x, y: model.tract.P(0, 2.9).y + 0.6 * a.larynx * k };
+    const hn = this.seg(20);
     for (const dy of [-0.16, 0.16]) {
-      for (let i = 0; i <= 20; i++) {
-        const u = -1 + i / 10;
+      for (let i = 0; i <= hn; i++) {
+        const u = -1 + (2 * i) / hn;
         H.p(hy.x + (0.35 - 0.65 * u * u) * k, hy.y + dy * k, 1.15 * u * k);
       }
       H.end();
@@ -1357,7 +1490,7 @@ export class Anatomy3D {
       F.p(...at(0.72, 0.1, 0)).p(...at(-0.55, 0.1, s * (0.06 + open / k))).end();
       F.p(...at(0.72, 0.0, 0)).p(...at(-0.6, 0.0, s * 0.62)).end();
       F.p(...at(0.65, 0.45, 0)).p(...at(-0.5, 0.45, s * 0.45)).end();
-      F.ellipse(at(-0.72, 0.15, s * (0.3 + open / k)), [0.18 * k, 0, 0], [0, 0.12 * k, 0.12 * k], 10);
+      F.ellipse(at(-0.72, 0.15, s * (0.3 + open / k)), [0.18 * k, 0, 0], [0, 0.12 * k, 0.12 * k], this.seg(10));
     }
     F.lines.forEach((l, i) => B.line(l, l.length / 3, i % 4 === 0 ? V.white : V.blueMid, i % 4 === 0 ? 1.3 : 1.0, { alpha: i % 4 === 2 ? 0.6 : 0.9, hot: i % 4 === 0 }));
   }
