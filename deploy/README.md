@@ -34,6 +34,15 @@ and Bun's cache are BuildKit cache mounts on the box, so rebuilds are incrementa
   deploy\check.cmd build    # just the build
   ```
   From Git Bash: `deploy/check.sh`, `deploy/check.sh build`.
+- **Look at a change before pushing:** `deploy\preview.cmd` builds this working tree's site on
+  the box and serves it at http://127.0.0.1:5320 through an SSH tunnel until Ctrl+C (localhost
+  is a secure context, so audio works). The live site is untouched.
+- **Run anything on the box** against this working tree, in the pipeline's toolchain, with a
+  persistent dev copy and cargo cache there (incremental):
+  ```powershell
+  deploy\box.cmd "cargo test -p chimera --test detail"
+  deploy\box.cmd "cargo run --release -q -p chimera --example bench"
+  ```
 - **Rebuild main now** (for example after a flaky failure): `ssh quidnug-docker touch ~/chimera/rebuild`
 - **Agent log:** `ssh quidnug-docker docker logs -f chimera-ci`
 - **Roll back** to an earlier build (the newest five images are kept):
@@ -69,6 +78,8 @@ any commit builds, including upstream's.
 | `cloudflared/` | tunnel `chimera` config and `credentials.json` (the secret; only on the box and in `~/.cloudflared` on the PC that created it) |
 | `src/` | the agent's checkout |
 | `ci-status/` | the status page, run records and logs, served at `/_ci/` |
+| `dev/` | `box.sh`'s copy of a working tree, with its `target/` and `node_modules/` (cargo's registry is the `chimera-dev-cargo` volume) |
+| `checks/` | scratch trees for `check.sh` and `preview.sh`, removed after each run; the preview runs as the `chimera-preview` container |
 
 ## One-time setup (already done)
 
