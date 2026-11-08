@@ -27,15 +27,17 @@ and Bun's cache are BuildKit cache mounts on the box, so rebuilds are incrementa
 ## Day to day
 
 - **Iterate:** commit, `git push`, watch `/_ci/`, reload the site.
-- **Check a change before pushing** (uncommitted changes included), still on the box:
-  ```bash
-  deploy/check.sh          # bun run build + bun run test
-  deploy/check.sh build    # just the build
+- **Check a change before pushing** (uncommitted changes included), still on the box, from
+  PowerShell or cmd:
+  ```powershell
+  deploy\check.cmd          # bun run build + bun run test
+  deploy\check.cmd build    # just the build
   ```
+  From Git Bash: `deploy/check.sh`, `deploy/check.sh build`.
 - **Rebuild main now** (for example after a flaky failure): `ssh quidnug-docker touch ~/chimera/rebuild`
 - **Agent log:** `ssh quidnug-docker docker logs -f chimera-ci`
 - **Roll back** to an earlier build (the newest five images are kept):
-  ```bash
+  ```powershell
   ssh quidnug-docker 'docker image ls chimera-web'
   ssh quidnug-docker 'docker tag chimera-web:<sha12> chimera-web:latest && cd ~/chimera && docker compose up -d web'
   ```
@@ -45,10 +47,14 @@ and Bun's cache are BuildKit cache mounts on the box, so rebuilds are incrementa
 
 Edit the files here, then copy them to the box and restart the agent and tunnel:
 
-```bash
-deploy/install.sh            # after editing ci/, docker-compose.yml or cloudflared/config.yml
-deploy/install.sh --rebuild  # after editing build/Dockerfile: also rebuilds main
+```powershell
+deploy\install.cmd             # after editing ci/, docker-compose.yml or cloudflared/config.yml
+deploy\install.cmd --rebuild   # after editing build/Dockerfile: also rebuilds main
 ```
+
+From Git Bash: `deploy/install.sh` (same flags). The `.cmd` launchers run the `.sh` scripts with
+Git for Windows' bash on purpose: a bare `bash` in PowerShell is WSL's, which has no ssh setup
+for the box.
 
 The pipeline reads its Dockerfile from the box (`~/chimera/build/`), not from the commit, so
 any commit builds, including upstream's.
@@ -66,12 +72,12 @@ any commit builds, including upstream's.
 
 ## One-time setup (already done)
 
-```bash
-cloudflared tunnel create chimera                          # writes ~/.cloudflared/<id>.json
+```powershell
+cloudflared tunnel create chimera                          # writes $HOME\.cloudflared\<id>.json
 cloudflared tunnel route dns chimera chimera.round.rocks    # CNAME -> <id>.cfargotunnel.com
-scp ~/.cloudflared/<id>.json quidnug-docker:chimera/cloudflared/credentials.json
+scp $HOME/.cloudflared/<id>.json quidnug-docker:chimera/cloudflared/credentials.json
 ssh quidnug-docker chmod 444 chimera/cloudflared/credentials.json
-deploy/install.sh
+deploy\install.cmd
 ```
 
 The site is public: anyone with the URL can open it and its `/_ci/` page. To make it private,

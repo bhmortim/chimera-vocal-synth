@@ -8,7 +8,7 @@ set -euo pipefail
 BOX=${BOX:-quidnug-docker}
 here=$(cd "$(dirname "$0")" && pwd)
 
-tar -C "$here" --exclude=./.env --exclude='./cloudflared/*.json' -cf - . |
+tar -C "$here" --exclude=./.env --exclude='./cloudflared/*.json' --exclude='./*.cmd' -cf - . |
   ssh "$BOX" 'mkdir -p ~/chimera/ci-status && tar -C ~/chimera -xf - &&
     cd ~/chimera && { [ -f .env ] || cp .env.example .env; }'
 

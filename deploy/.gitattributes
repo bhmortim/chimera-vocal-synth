@@ -1,0 +1,3 @@
+# Batch files keep CRLF (cmd misparses some LF-only scripts); shell scripts stay LF.
+*.cmd text eol=crlf
+*.sh text eol=lf
