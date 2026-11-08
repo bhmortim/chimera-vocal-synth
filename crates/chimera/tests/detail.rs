@@ -174,6 +174,34 @@ fn every_detail_plays_a_steady_vowel() {
 }
 
 #[test]
+fn switching_to_ultra_while_playing_stays_finite() {
+    use chimera::anatomy::human::{ArticKey, ArticPatch};
+    for body in [BodyMix::MALE, BodyMix::CHILD] {
+        let mut e = Engine::new(FS_OUT);
+        e.set_body(body);
+        e.set_gate(1.0);
+        let mut out = vec![0.0f32; 128];
+        for _ in 0..200 {
+            e.render(&mut out);
+        }
+        e.set_detail(Detail { resolution: Resolution::Ultra, anatomy: true });
+        let mut peak = 0.0f32;
+        for b in 0..750 {
+            if b % 50 == 0 {
+                e.set_artic(&ArticPatch::default().with(ArticKey::Jaw, 0.2 + 0.4 * ((b / 50) % 5) as f64), None);
+            }
+            if b % 75 == 0 {
+                e.set_source(&SourcePatch::f0(100.0 + 40.0 * ((b / 75) % 7) as f64));
+            }
+            e.render(&mut out);
+            assert!(out.iter().all(|x| x.is_finite()), "{body:?}: a non-finite sample in block {b} after the switch");
+            peak = out.iter().fold(peak, |m, x| m.max(x.abs()));
+        }
+        assert!(peak < 1.0, "{body:?}: peak {peak}");
+    }
+}
+
+#[test]
 fn the_engine_switches_detail_keeping_the_performers_settings() {
     let mut e = Engine::new(FS_OUT);
     e.set_body(BodyMix::FEMALE);

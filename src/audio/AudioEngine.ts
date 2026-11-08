@@ -39,6 +39,7 @@ export class AudioEngine {
   private currentDetail: Detail = STANDARD_DETAIL;
   private flushScheduled = false;
   private readyListeners = new Set<() => void>();
+  private detailListeners = new Set<(d: Detail) => void>();
   private plannedListeners = new Set<(p: PlannedMessage) => void>();
   /** most recent planned utterance (for timelines) */
   lastPlan: PlannedMessage | null = null;
@@ -60,7 +61,11 @@ export class AudioEngine {
       await this.ctx.resume();
       return;
     }
-    const ctx = new AudioContext({ latencyHint: "interactive" });
+    // 48 kHz on every device: the rate the engine is calibrated and tested at. At a device's own
+    // 96 kHz the engine did twice the work per second at every detail (a render quantum lasts half
+    // as long, the control rate doubles): the standard voice used 65 % of the budget there, Ultra
+    // more than all of it (underruns, then silence). The browser resamples to the device.
+    const ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
     this.ctx = ctx;
     this.sampleRate = ctx.sampleRate;
     await ctx.audioWorklet.addModule(workletUrl);
@@ -123,6 +128,10 @@ export class AudioEngine {
         for (const l of this.plannedListeners) l(m);
       } else if (m.type === "ready") {
         for (const l of this.readyListeners) l();
+      } else if (m.type === "detail") {
+        // the worklet stepped the detail down: this device couldn't keep up with it
+        this.currentDetail = m.detail;
+        for (const l of this.detailListeners) l(m.detail);
       } else if (m.type === "error") {
         this.error = m.message;
         console.error("worklet:", m.message);
@@ -134,6 +143,12 @@ export class AudioEngine {
   onTelemetry(l: Listener): () => void {
     this.listeners.add(l);
     return () => this.listeners.delete(l);
+  }
+
+  /** The worklet stepped the voice's detail down because the device couldn't keep up with it. */
+  onDetailFallback(l: (d: Detail) => void): () => void {
+    this.detailListeners.add(l);
+    return () => this.detailListeners.delete(l);
   }
 
   onPlanned(l: (p: PlannedMessage) => void): () => void {

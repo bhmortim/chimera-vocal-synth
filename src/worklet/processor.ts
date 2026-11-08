@@ -8,8 +8,9 @@
  */
 import { writeGestures, writeSteps, fromUtf8, utf8, CONTROL_KEYS } from "../wasm/wire.ts";
 import type { ToWorklet, FromWorklet, TelemetryMessage } from "./protocol.ts";
-import type { BodyMix, CreatureTelemetry } from "../wasm/types.ts";
-import { RESOLUTION_LEVEL } from "../wasm/detail.ts";
+import type { BodyMix, CreatureTelemetry, Detail } from "../wasm/types.ts";
+import { RESOLUTION_LEVEL, STANDARD_DETAIL } from "../wasm/detail.ts";
+import { OverloadGuard } from "./overload.ts";
 
 // Minimal AudioWorkletGlobalScope typings
 declare const sampleRate: number;
@@ -46,6 +47,10 @@ class ChimeraProcessor extends AudioWorkletProcessor {
   private blocks = 0;
   private load = 0;
   private creature: CreatureInfo | null = null;
+  /** the human voice's detail; stepped down here when the device can't keep up with it */
+  private detail: Detail = STANDARD_DETAIL;
+  /** a second of render quanta over budget steps a finer detail down */
+  private readonly guard = new OverloadGuard(Math.round(sampleRate / 128));
 
   constructor(options: { processorOptions: { module: WebAssembly.Module } }) {
     super();
@@ -80,6 +85,14 @@ class ChimeraProcessor extends AudioWorkletProcessor {
     return { female: this.x.engine_body_female(this.h), child: this.x.engine_body_child(this.h) };
   }
 
+  /** Rebuild the human voice at this detail (allocates, as a body change does). */
+  private setDetail(d: Detail): void {
+    this.x.engine_set_detail(this.h, RESOLUTION_LEVEL[d.resolution] ?? 0, d.anatomy ? 1 : 0);
+    this.detail = d;
+    this.guard.reset();
+    this.postReady();
+  }
+
   private postReady(): void {
     const x = this.x, h = this.h;
     this.post({ type: "ready", sampleRate, body: this.body(), nPh: x.engine_n_ph(h), nOr: x.engine_n_or(h), creature: this.creature?.id ?? "human" });
@@ -111,8 +124,7 @@ class ChimeraProcessor extends AudioWorkletProcessor {
         this.postReady();
         break;
       case "detail":
-        x.engine_set_detail(h, RESOLUTION_LEVEL[m.detail.resolution] ?? 0, m.detail.anatomy ? 1 : 0);
-        this.postReady();
+        this.setDetail(m.detail);
         break;
       case "artic": {
         const v = this.values();
@@ -204,6 +216,16 @@ class ChimeraProcessor extends AudioWorkletProcessor {
     const dt = Date.now() - t0;
     const budget = (ch0.length / sampleRate) * 1000;
     this.load += 0.05 * (dt / budget - this.load);
+    // a finer detail this device can't sustain: step it down rather than let the audio give out
+    const lighter = this.creature || this.failed ? null : this.guard.observe(this.load, this.detail);
+    if (lighter) {
+      try {
+        this.setDetail(lighter);
+        this.post({ type: "detail", detail: lighter, reason: "overload" });
+      } catch (err) {
+        this.fail(err);
+      }
+    }
     if (this.telemetryOn && !this.failed && ++this.blocks % 6 === 0) {
       try {
         if (this.creature) this.post({ type: "ctelemetry", t: this.creatureTelemetry(this.creature), load: this.load });

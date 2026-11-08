@@ -42,6 +42,7 @@ function TopBar() {
   const setBody = useStore((s) => s.setBody);
   const detail = useStore((s) => s.detail);
   const setDetail = useStore((s) => s.setDetail);
+  const detailNotice = useStore((s) => s.detailNotice);
   const volume = useStore((s) => s.volume);
   const setVolume = useStore((s) => s.setVolume);
   const mode = useStore((s) => s.mode);
@@ -97,6 +98,11 @@ function TopBar() {
             ]}
           />
           <Toggle label="Anatomy+" checked={detail.anatomy} onChange={(anatomy) => setDetail({ ...detail, anatomy })} />
+          {detailNotice && (
+            <span className="detail-notice" role="status">
+              {detailNotice}
+            </span>
+          )}
         </div>
       )}
       <div className="topbar-right">

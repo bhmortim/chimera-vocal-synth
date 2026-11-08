@@ -39,6 +39,8 @@ interface State {
   body: BodyMix;
   /** how finely the voice is simulated: resolution and extra anatomy (wasm/detail.ts) */
   detail: Detail;
+  /** why the detail just changed by itself (the device couldn't keep up), shown for a while */
+  detailNotice: string | null;
   source: VoiceSource;
   artic: HumanArtic;
   tipFree: boolean;
@@ -128,6 +130,7 @@ export const useStore = create<State>((set, get) => ({
   startError: null,
   body: PRESETS.male,
   detail: STANDARD_DETAIL,
+  detailNotice: null,
   source: { ...DEFAULT_SOURCE },
   artic: (() => {
     const tip = restTip(NEUTRAL.jaw, NEUTRAL.tbX, NEUTRAL.tbY);
@@ -381,3 +384,16 @@ export const useStore = create<State>((set, get) => ({
     });
   },
 }));
+
+// The worklet steps a finer detail down when this device can't keep up with it (the audio would
+// otherwise break up and stop): follow it, end what the rebuilt voice no longer plays, say why.
+const RESOLUTION_LABEL = { standard: "Std", high: "High", ultra: "Ultra" } as const;
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+engine.onDetailFallback((d) => {
+  const s = useStore.getState();
+  if (s.mode === "sing") stopSinging();
+  if (s.mode === "speak") stopSpeaking();
+  useStore.setState({ detail: d, detailNotice: `${RESOLUTION_LABEL[s.detail.resolution]} is too heavy for this device: now ${RESOLUTION_LABEL[d.resolution]}` });
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => useStore.setState({ detailNotice: null }), 12000);
+});

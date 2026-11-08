@@ -67,4 +67,6 @@ export type FromWorklet =
   | TelemetryMessage
   | CreatureTelemetryMessage
   | PlannedMessage
+  /** the worklet stepped the voice's detail down: the device couldn't keep up with it */
+  | { type: "detail"; detail: Detail; reason: "overload" }
   | { type: "error"; message: string };

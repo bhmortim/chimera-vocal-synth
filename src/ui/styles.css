@@ -1251,8 +1251,15 @@ body {
 /* the simulation's detail: resolution chips and the extra-anatomy toggle */
 .detail-control {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+/* why the detail stepped down by itself (the device couldn't keep up) */
+.detail-notice {
+  color: var(--amber);
+  font-size: 12px;
 }
 
 .body-pad {
